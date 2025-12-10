@@ -13,7 +13,9 @@
 #include <LittleFS.h>
 
 void setup() {
-  Serial.begin(921600);
+  Serial.begin(115200);
+  delay(2000);
+  Serial.println("BOOTING Winery...");
   initState();
   initPins();
 
@@ -27,11 +29,16 @@ void setup() {
   Serial.println(WiFi.localIP());
 
   initSensors();
+  
+  // NEW: Register additional sensor types (v1.4.0)
+  registerSensor("pressure", 34);    // MPX5010 on GPIO34 (ADC1_CH6)
+  registerSensor("level_cap", 36);   // Capacitive strip on GPIO36 (ADC1_CH0)
+  
   initWebServer();
 }
 
 void loop() {
-  updateTemperatures();
+  updateSensors();  // CHANGED: unified sensor update (all types)
   updateControlLoop();
 
   static unsigned long lastPrint = 0;

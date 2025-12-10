@@ -105,7 +105,7 @@ void initWebServer() {
       request->send(200, "text/plain", "OK");
     });
 
-    // State endpoint
+  // State endpoint - UPDATED for unified sensors
   server.on("/state", HTTP_GET, [](AsyncWebServerRequest *request) {
     StaticJsonDocument<1024> doc;
 
@@ -131,29 +131,18 @@ void initWebServer() {
     doc["ip"]   = WiFi.localIP().toString();
     doc["ssid"] = WiFi.SSID();
 
-    // Dynamic DS18B20 list (idx + addr)
+    // Unified sensors array (all types: temp, pressure, level...)
     JsonArray sensorsArr = doc.createNestedArray("sensors");
     for (int i = 0; i < sensorCount; i++) {
-      char buf[17];
-      for (uint8_t b = 0; b < 8; b++) {
-        sprintf(buf + b * 2, "%02X", foundSensors[i][b]);
-      }
-      buf[16] = '\0';
-
-      JsonObject o = sensorsArr.createNestedObject();
-      o["idx"]  = i;
-      o["addr"] = buf;
+      JsonObject s = sensorsArr.createNestedObject();
+      s["idx"]   = allSensors[i].idx;
+      s["type"]  = allSensors[i].type;
+      s["pin"]   = allSensors[i].pin;
+      s["addr"]  = allSensors[i].addr;
+      s["value"] = allSensors[i].value;
     }
 
-    // Per-sensor temps aligned with sensors[]
-    JsonArray tempsArr = doc.createNestedArray("temps");
-    // Use the same mapping function as updateTemperatures()
-    extern float readByIndex(int idx);  // declare helper from Sensors.cpp
-    for (int i = 0; i < sensorCount; i++) {
-      tempsArr.add(readByIndex(i));
-    }
-
-    // Current mapping indices
+    // Current mapping indices (legacy temp roles only)
     doc["map_t1"] = idxT1;
     doc["map_t2"] = idxT2;
     doc["map_t3"] = idxT3;
@@ -163,7 +152,7 @@ void initWebServer() {
     request->send(200, "application/json", out);
   });
 
-  // Mapping config endpoint
+  // Mapping config endpoint (legacy T1/T2/T3 only)
   server.on("/config/sensors", HTTP_POST,
     [](AsyncWebServerRequest *request) {},
     NULL,
