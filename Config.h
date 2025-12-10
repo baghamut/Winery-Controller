@@ -1,7 +1,10 @@
 #pragma once
 
 // --------- VERSION & GITHUB OTA CONFIG ---------
-#define FIRMWARE_VERSION "1.2.0"
+#define FIRMWARE_VERSION "1.3.0"
+//- Dynamic DS18B20 discovery with per-sensor temps
+//- Sensor mapping UI (assign any probe to T1/T2/T3)
+//- Split UI into Main/Config screens; moved OTA/Restart to Config
 #define GH_OWNER  "baghamut"
 #define GH_REPO   "Winery-Controller"
 

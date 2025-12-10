@@ -38,8 +38,15 @@
     }
 
     .app-header {
-      text-align: center;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
       margin-bottom: 12px;
+      gap: 8px;
+    }
+
+    .app-header-main {
+      text-align: left;
     }
 
     .app-title {
@@ -54,6 +61,25 @@
       font-size: 0.9rem;
       color: var(--text-muted);
       margin-top: 4px;
+    }
+
+    .nav-btn {
+      padding: 6px 10px;
+      border-radius: 999px;
+      border: 1px solid var(--border-subtle);
+      background: var(--bg-card);
+      color: var(--text-main);
+      font-size: 0.8rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+
+    .nav-btn:hover {
+      border-color: var(--accent);
+      color: var(--accent);
     }
 
     .divider {
@@ -315,121 +341,201 @@
       margin-top: 10px;
       margin-bottom: 4px;
     }
+
+    .sensor-table-header,
+    .sensor-table-row {
+      display: grid;
+      grid-template-columns: 0.7fr 2.1fr 1.2fr;
+      column-gap: 8px;
+      font-size: 0.8rem;
+      padding: 3px 0;
+      border-bottom: 1px solid #262626;
+    }
+
+    .sensor-table-header {
+      font-weight: 600;
+      color: var(--text-muted);
+      border-bottom-color: #444;
+    }
+
+    .sensor-table-row:last-child {
+      border-bottom: none;
+    }
+
+    .sensor-label {
+      color: var(--text-muted);
+    }
+
+    .sensor-addr {
+      color: var(--text-main);
+      font-family: monospace;
+      font-size: 0.78rem;
+    }
+
+    .sensor-temp {
+      color: var(--text-green);
+      text-align: right;
+    }
   </style>
 </head>
+<body>
   <div class="app-shell">
-    <!-- Header -->
     <header class="app-header">
-      <div class="app-title">VINODELNYA</div>
-      <div class="app-subtitle" id="subtitle">Winery Controller</div>
+      <div class="app-header-main">
+        <div class="app-title">VINODELNYA</div>
+        <div class="app-subtitle" id="subtitle">Winery Controller</div>
+      </div>
+      <button class="nav-btn" id="navBtn" onclick="toggleScreen()">Config</button>
     </header>
     <hr class="divider">
 
-    <!-- Control Card -->
-    <section class="card">
-      <div class="card-title">Sensor &amp; Control</div>
-      <div class="status-badge" id="statusBadge">STOPPED</div>
+    <!-- MAIN SCREEN -->
+    <div id="screen-main">
+      <section class="card">
+        <div class="card-title">Sensor &amp; Control</div>
+        <div class="status-badge" id="statusBadge">STOPPED</div>
 
-      <!-- Setpoint + Load row -->
-      <div class="row" style="align-items:flex-end;">
-        <div class="metric-primary" style="margin-bottom:0;">
-          Setpoint <span id="setpointDisplay">0.0</span>
-          <span id="unitDisplay">%</span>
+        <div class="row" style="align-items:flex-end;">
+          <div class="metric-primary" style="margin-bottom:0;">
+            Setpoint <span id="setpointDisplay">0.0</span>
+            <span id="unitDisplay">%</span>
+          </div>
+          <div class="metric-primary" style="margin-bottom:0;font-size:1.0rem;">
+            Out: <span id="pwmNow">0.0</span> %
+          </div>
         </div>
-        <div class="metric-primary" style="margin-bottom:0;">
-          Load: <span id="pwmNow">0.0</span> %
+
+        <label class="field">
+          <span class="field-label">Active Process</span>
+          <select id="processSelect" onchange="setProcess(this.value)">
+            <option value="0">Off</option>
+            <option value="1">Distiller</option>
+            <option value="2">Rectifier</option>
+          </select>
+        </label>
+
+        <label class="field">
+          <span class="field-label">Control Mode</span>
+          <select id="controlSelect" onchange="setControl(this.value)">
+            <option value="0">Power-Driven</option>
+            <option value="1">Temperature-Driven</option>
+          </select>
+        </label>
+
+        <div class="field">
+          <span class="field-label">Setpoint</span>
+          <div class="slider-row">
+            <input type="range" id="setpoint" min="0" max="100" step="0.5" value="0"
+                   oninput="setSetpoint(this.value)">
+            <div class="numeric-box" id="setpointValueBox">0.0</div>
+            <div class="unit-box" id="unitBox">%</div>
+          </div>
         </div>
-      </div>
 
-      <!-- Active Process -->
-      <label class="field">
-        <span class="field-label">Active Process</span>
-        <select id="processSelect" onchange="setProcess(this.value)">
-          <option value="0">Off</option>
-          <option value="1">Distiller</option>
-          <option value="2">Rectifier</option>
-        </select>
-      </label>
-
-      <!-- Control Mode -->
-      <label class="field">
-        <span class="field-label">Control Mode</span>
-        <select id="controlSelect" onchange="setControl(this.value)">
-          <option value="0">Power-Driven</option>
-          <option value="1">Temperature-Driven</option>
-        </select>
-      </label>
-
-      <!-- Setpoint Slider -->
-      <div class="field">
-        <span class="field-label">Setpoint</span>
-        <div class="slider-row">
-          <input type="range" id="setpoint" min="0" max="100" step="0.5" value="0"
-                 oninput="setSetpoint(this.value)">
-          <div class="numeric-box" id="setpointValueBox">0.0</div>
-          <div class="unit-box" id="unitBox">%</div>
+        <div class="temp-label">Temperature Readings</div>
+        <div class="row">
+          <span class="row-label">T1 - Tank:</span>
+          <span class="row-value"><span id="t1">0.0</span> °C</span>
         </div>
-      </div>
+        <div class="row">
+          <span class="row-label">T2 - Outdoor:</span>
+          <span class="row-value"><span id="t2">0.0</span> °C</span>
+        </div>
+        <div class="row">
+          <span class="row-label">T3 - Column:</span>
+          <span class="row-value"><span id="t3">0.0</span> °C</span>
+        </div>
+      </section>
 
-      <!-- Temperature Readings -->
-      <div class="temp-label">Temperature Readings</div>
-      <div class="row">
-        <span class="row-label">T1 - Tank:</span>
-        <span class="row-value"><span id="t1">0.0</span> °C</span>
-      </div>
-      <div class="row">
-        <span class="row-label">T2 - Outdoor:</span>
-        <span class="row-value"><span id="t2">0.0</span> °C</span>
-      </div>
-      <div class="row">
-        <span class="row-label">T3 - Column:</span>
-        <span class="row-value"><span id="t3">0.0</span> °C</span>
-      </div>
-    </section>
+      <section class="card" id="ssrCard">
+        <div class="card-title">SSR Switches</div>
+        <div id="ssrContent">
+          <div class="no-process">No process selected</div>
+        </div>
+      </section>
 
-    <!-- SSR Card -->
-    <section class="card" id="ssrCard">
-      <div class="card-title">SSR Switches</div>
-      <div id="ssrContent">
-        <div class="no-process">No process selected</div>
-      </div>
-    </section>
+      <section class="card">
+        <div class="card-title">Control</div>
+        <div id="controlButton">
+          <button class="btn btn-start" id="startBtn" onclick="send('START')" disabled>Start Process</button>
+        </div>
+      </section>
 
-    <!-- Control Card -->
-    <section class="card">
-      <div class="card-title">Control</div>
-      <div id="controlButton">
-        <button class="btn btn-start" id="startBtn" onclick="send('START')" disabled>Start Process</button>
-      </div>
-    </section>
+      <section class="card">
+        <div class="card-title">Diagnostic</div>
+        <div class="diag-row">
+          <span>WiFi IP:</span>
+          <span id="wifiIP">--</span>
+        </div>
+        <div class="diag-row">
+          <span>WiFi SSID:</span>
+          <span id="wifiSSID">--</span>
+        </div>
+        <div class="diag-row">
+          <span>Last Update:</span>
+          <span id="lastUpdate">--</span>
+        </div>
+      </section>
+    </div>
 
-    <!-- Config Card -->
-    <section class="card">
-      <div class="card-title">Configuration</div>
-      <button class="btn btn-primary" id="otaBtn" onclick="send('OTA')">Remote OTA Update</button>
-      <button class="btn btn-danger" id="restartBtn" onclick="send('RESTART')">Restart Device</button>
-    </section>
+    <!-- CONFIG SCREEN -->
+    <div id="screen-config" style="display:none;">
+      <section class="card">
+        <div class="card-title">Sensor Mapping</div>
+        <div class="field">
+          <span class="field-label">T1 - Tank source</span>
+          <select id="t1_sel" onchange="saveSensorMap()"></select>
+        </div>
+        <div class="field">
+          <span class="field-label">T2 - Outdoor source</span>
+          <select id="t2_sel" onchange="saveSensorMap()"></select>
+        </div>
+        <div class="field">
+          <span class="field-label">T3 - Column source</span>
+          <select id="t3_sel" onchange="saveSensorMap()"></select>
+        </div>
+      </section>
 
-    <!-- Diagnostic Card -->
-    <section class="card">
-      <div class="card-title">Diagnostic</div>
-      <div class="diag-row">
-        <span>WiFi IP:</span>
-        <span id="wifiIP">--</span>
-      </div>
-      <div class="diag-row">
-        <span>WiFi SSID:</span>
-        <span id="wifiSSID">--</span>
-      </div>
-      <div class="diag-row">
-        <span>Last Update:</span>
-        <span id="lastUpdate">--</span>
-      </div>
-    </section>
+      <section class="card">
+        <div class="card-title">All Sensors</div>
+        <div id="sensorTable">
+          <div class="sensor-table-header">
+            <div>Label</div>
+            <div>Address</div>
+            <div style="text-align:right;">Temp</div>
+          </div>
+        </div>
+      </section>
+
+      <section class="card">
+        <div class="card-title">Maintenance</div>
+        <button class="btn btn-primary" id="otaBtn" onclick="send('OTA')">Remote OTA Update</button>
+        <button class="btn btn-danger" id="restartBtn" onclick="send('RESTART')">Restart Device</button>
+      </section>
+    </div>
   </div>
 
   <script>
-    // --- Command helpers (unchanged protocol) ---
+    let currentScreen = "main";
+
+    function toggleScreen() {
+      const main = document.getElementById("screen-main");
+      const cfg = document.getElementById("screen-config");
+      const btn = document.getElementById("navBtn");
+
+      if (currentScreen === "main") {
+        main.style.display = "none";
+        cfg.style.display = "block";
+        btn.textContent = "Back";
+        currentScreen = "config";
+      } else {
+        main.style.display = "block";
+        cfg.style.display = "none";
+        btn.textContent = "Config";
+        currentScreen = "main";
+      }
+    }
+
     async function send(cmd) {
       try {
         const response = await fetch("/", {
@@ -462,7 +568,14 @@
       send("SSR:" + which);
     }
 
-    // --- State polling from /state ---
+    function formatTemp(v) {
+      const t = Number(v);
+      if (isNaN(t) || t <= -120) {
+        return "Offline";
+      }
+      return t.toFixed(1);
+    }
+
     async function fetchState() {
       try {
         const res = await fetch("/state", { cache: "no-store" });
@@ -474,8 +587,97 @@
       }
     }
 
+    function populateSensorSelects(s) {
+      const list = s.sensors || [];
+
+      function fillSelect(id) {
+        const el = document.getElementById(id);
+        if (!el) return;
+        el.innerHTML = "";
+
+        const optNone = document.createElement("option");
+        optNone.value = -1;
+        optNone.textContent = "None";
+        el.appendChild(optNone);
+
+        list.forEach((item) => {
+          const opt = document.createElement("option");
+          opt.value = item.idx;
+          opt.textContent = item.idx + " - " + item.addr;
+          el.appendChild(opt);
+        });
+      }
+
+      fillSelect("t1_sel");
+      fillSelect("t2_sel");
+      fillSelect("t3_sel");
+
+      if (document.getElementById("t1_sel")) {
+        document.getElementById("t1_sel").value = (s.map_t1 ?? -1);
+      }
+      if (document.getElementById("t2_sel")) {
+        document.getElementById("t2_sel").value = (s.map_t2 ?? -1);
+      }
+      if (document.getElementById("t3_sel")) {
+        document.getElementById("t3_sel").value = (s.map_t3 ?? -1);
+      }
+    }
+
+    async function saveSensorMap() {
+      const t1 = Number(document.getElementById("t1_sel").value);
+      const t2 = Number(document.getElementById("t2_sel").value);
+      const t3 = Number(document.getElementById("t3_sel").value);
+
+      const payload = { t1, t2, t3 };
+
+      try {
+        await fetch("/config/sensors", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+      } catch (e) {
+        console.error("saveSensorMap failed", e);
+      }
+    }
+
+    function renderSensorTable(s) {
+      const container = document.getElementById("sensorTable");
+      if (!container) return;
+
+      const list = s.sensors || [];
+      const temps = s.temps || [];
+
+      let html = `
+        <div class="sensor-table-header">
+          <div>Label</div>
+          <div>Address</div>
+          <div style="text-align:right;">Temp</div>
+        </div>
+      `;
+
+      if (list.length === 0) {
+        html += `<div class="sensor-table-row"><div class="sensor-label">None</div><div class="sensor-addr">No sensors found</div><div class="sensor-temp">--</div></div>`;
+      } else {
+        list.forEach((item, idx) => {
+          const label = "T" + (idx + 1);
+          const tempVal = (idx < temps.length) ? temps[idx] : NaN;
+          const tempText = formatTemp(tempVal);
+
+          html += `
+            <div class="sensor-table-row">
+              <div class="sensor-label">${label}</div>
+              <div class="sensor-addr">${item.addr}</div>
+              <div class="sensor-temp">${tempText}</div>
+            </div>
+          `;
+        });
+      }
+
+      container.innerHTML = html;
+    }
+
     function applyState(s) {
-      // Status badge & subtitle
       const badge = document.getElementById("statusBadge");
       const subtitle = document.getElementById("subtitle");
       const running = !!s.isRunning;
@@ -486,15 +688,12 @@
 
       subtitle.textContent = "Winery Controller FW " + (s.fw || "");
 
-      // Process / control selects
       const process = Number(s.processMode || 0);
       const control = Number(s.controlMode || 0);
       document.getElementById("processSelect").value = String(process);
       document.getElementById("controlSelect").value = String(control);
 
-      // Setpoint & unit
       const sp = Number(s.setpoint || 0).toFixed(1);
-      const rawUnit = control === 0 ? "%" : "C";
       const displayUnit = control === 0 ? "%" : "°C";
 
       document.getElementById("setpoint").value = sp;
@@ -503,31 +702,37 @@
       document.getElementById("unitDisplay").textContent = displayUnit;
       document.getElementById("unitBox").textContent = displayUnit;
 
-
-      // Enable/disable setpoint slider (process must not be Off)
       const setpointEnabled = process !== 0;
       document.getElementById("setpoint").disabled = !setpointEnabled;
 
-      // Temperatures
-      document.getElementById("t1").textContent = Number(s.t1 || 0).toFixed(1);
-      document.getElementById("t2").textContent = Number(s.t2 || 0).toFixed(1);
-      document.getElementById("t3").textContent = Number(s.t3 || 0).toFixed(1);
+      let pwm = 0;
+      if (process === 1) {
+        pwm = Number(s.distPower || 0);
+      } else if (process === 2) {
+        pwm = Number(s.rectPower || 0);
+      }
+      document.getElementById("pwmNow").textContent = pwm.toFixed(1);
 
-      // SSR buttons area
-      renderSsrButtons(process, s);
+      document.getElementById("t1").textContent = formatTemp(s.t1);
+      document.getElementById("t2").textContent = formatTemp(s.t2);
+      document.getElementById("t3").textContent = formatTemp(s.t3);
 
-      // Start/Stop button & OTA/Restart safety
-      const startBtn = document.getElementById("startBtn");
-      const controlBtnDiv = document.getElementById("controlButton");
+      renderSsrButtons(process, s, running);
+      renderSensorTable(s);
+      populateSensorSelects(s);
+
       let enabledSSR = 0;
       if (process === 1) {
         enabledSSR = (s.ssr1 ? 1 : 0) + (s.ssr2 ? 1 : 0) + (s.ssr3 ? 1 : 0);
       } else if (process === 2) {
         enabledSSR = (s.ssr4 ? 1 : 0) + (s.ssr5 ? 1 : 0);
       }
+
+      const controlBtnDiv = document.getElementById("controlButton");
       const canStart = process !== 0 &&
                        Number(s.setpoint || 0) > 0 &&
                        enabledSSR > 0;
+
       if (running) {
         controlBtnDiv.innerHTML =
           '<button class="btn btn-stop" id="stopBtn">Stop Process</button>';
@@ -542,11 +747,9 @@
         sb.addEventListener("click", () => send("START"));
       }
 
-      // OTA / Restart disabled while running
       document.getElementById("otaBtn").disabled = running;
       document.getElementById("restartBtn").disabled = running;
 
-      // Diagnostics
       if (s.ip) {
         document.getElementById("wifiIP").textContent = s.ip;
       }
@@ -557,10 +760,10 @@
         new Date().toLocaleTimeString();
     }
 
-    function renderSsrButtons(process, s) {
+    function renderSsrButtons(process, s, running) {
       const c = document.getElementById("ssrContent");
       const sp = Number(s.setpoint || 0);
-      const disabledAttr = sp === 0 ? " disabled" : "";
+      const disabledAttr = (sp === 0 || running) ? " disabled" : "";
 
       if (process === 0) {
         c.innerHTML =
@@ -569,7 +772,6 @@
       }
 
       if (process === 1) {
-        // Distiller: SSR 1–3
         c.innerHTML =
           '<div class="no-process" style="margin-bottom:10px;">DISTILLER SSRS (1–3)</div>' +
           '<div class="ssr-row">' +
@@ -578,7 +780,6 @@
           ssrButtonHtml("S3", s.ssr3, disabledAttr) +
           "</div>";
       } else {
-        // Rectifier: SSR 4–5
         c.innerHTML =
           '<div class="no-process" style="margin-bottom:10px;">RECTIFIER SSRS (4–5)</div>' +
           '<div class="ssr-row">' +
@@ -587,10 +788,9 @@
           "</div>";
       }
 
-      // attach click handlers
       ["S1", "S2", "S3", "S4", "S5"].forEach((id) => {
         const btn = document.getElementById("btn-" + id);
-        if (btn) {
+        if (btn && !btn.disabled) {
           btn.addEventListener("click", () => toggleSSR(id));
         }
       });
@@ -612,10 +812,9 @@
       );
     }
 
-    // Initialize polling
     window.addEventListener("DOMContentLoaded", () => {
-      fetchState();                 // first load
-      setInterval(fetchState, 1000); // poll every second
+      fetchState();
+      setInterval(fetchState, 1000);
     });
   </script>
 
