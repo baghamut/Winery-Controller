@@ -2,6 +2,7 @@
 // Winery Controller with GitHub OTA
 // ESP32-S3 + 5x SSR + 3x DS18B20 + PID + Web UI
 // ============================================
+//Initial setup, not operational starting point
 
 #include <WiFi.h>
 #include <AsyncTCP.h>
@@ -12,17 +13,17 @@
 #include <Update.h>
 
 // --------- VERSION & GITHUB OTA CONFIG ---------
-#define FIRMWARE_VERSION "1.0.0"   // <== bump this when you release
+#define FIRMWARE_VERSION "1.0.0"
 #define GH_OWNER  "baghamut"
 #define GH_REPO   "Winery-Controller"
 
 // --------- PINS ---------
-#define ONE_WIRE_BUS   17   // DS18B20 data
-#define DISTILLER_PWM1 5    // SSR1
-#define DISTILLER_PWM2 6    // SSR2
-#define DISTILLER_PWM3 7    // SSR3
-#define RECTIFIER_PWM1 14   // SSR4
-#define RECTIFIER_PWM2 15   // SSR5
+#define ONE_WIRE_BUS   17
+#define DISTILLER_PWM1 5
+#define DISTILLER_PWM2 6
+#define DISTILLER_PWM3 7
+#define RECTIFIER_PWM1 14
+#define RECTIFIER_PWM2 15
 
 // --------- WIFI ---------
 const char* ssid     = "SmartHome";
@@ -140,8 +141,7 @@ void resetProcessDefaults() {
 }
 
 // =====================================================
-// GITHUB OTA HELPER: simple JSON search
-// (no ArduinoJson to keep it light; relies on predictable GitHub JSON)
+// GITHUB OTA HELPERS
 // =====================================================
 String jsonGetString(const String &json, const String &key) {
   String pattern = "\"" + key + "\":\"";
@@ -153,7 +153,6 @@ String jsonGetString(const String &json, const String &key) {
   return json.substring(idx, end);
 }
 
-// Find first browser_download_url in assets array
 String jsonGetFirstAssetURL(const String &json) {
   String key = "\"browser_download_url\":\"";
   int idx = json.indexOf(key);
@@ -164,17 +163,13 @@ String jsonGetFirstAssetURL(const String &json) {
   return json.substring(idx, end);
 }
 
-// Compare versions vX.Y.Z (git tag) vs FIRMWARE_VERSION X.Y.Z
 bool isNewerVersion(const String &tag) {
   String t = tag;
   if (t.startsWith("v") || t.startsWith("V")) t.remove(0,1);
   if (t == FIRMWARE_VERSION) return false;
-  // very simple: if different string, treat as newer
-  // you can extend this to semantic comparison later
   return true;
 }
 
-// Perform firmware download and flash from URL
 bool otaFromURL(const String &url) {
   Serial.println("OTA: downloading " + url);
   HTTPClient http;
@@ -220,10 +215,9 @@ bool otaFromURL(const String &url) {
   http.end();
   delay(1000);
   ESP.restart();
-  return true; // not reached
+  return true;
 }
 
-// Entry point called when OTA button pressed
 void handleGitHubOTA() {
   if (isRunning) {
     Serial.println("OTA blocked: process running");
@@ -235,7 +229,7 @@ void handleGitHubOTA() {
   String apiURL = "https://api.github.com/repos/" + String(GH_OWNER) + "/" + String(GH_REPO) + "/releases/latest";
   http.begin(apiURL);
   http.addHeader("User-Agent", "ESP32-Winery");
-  http.addHeader("Accept", "application/vnd.github.v3+json");
+  http.addHeader("Accept", "application/vnd.github.v3+json"); // [web:198]
 
   int code = http.GET();
   if (code != 200) {
@@ -249,11 +243,11 @@ void handleGitHubOTA() {
 
   String tag = jsonGetString(payload, "tag_name");
   if (tag == "") {
-    Serial.println("OTA: tag_name not found in JSON");
+    Serial.println("OTA: tag_name not found");
     return;
   }
 
-  Serial.println("OTA: latest tag from GitHub = " + tag + ", current FW = " + String(FIRMWARE_VERSION));
+  Serial.println("OTA: latest tag = " + tag + ", current FW = " + String(FIRMWARE_VERSION));
 
   if (!isNewerVersion(tag)) {
     Serial.println("OTA: already up-to-date");
@@ -262,7 +256,7 @@ void handleGitHubOTA() {
 
   String binURL = jsonGetFirstAssetURL(payload);
   if (binURL == "") {
-    Serial.println("OTA: no assets with browser_download_url found");
+    Serial.println("OTA: no asset URL found");
     return;
   }
 
@@ -283,6 +277,7 @@ void setupHttpRoot() {
     String unit = controlMode==0 ? "%" : "C";
     String runState = isRunning ? "RUNNING" : "STOPPED";
     bool startButtonEnabled = (processMode != 0) && (setpointValue > 0);
+    bool setpointEnabled    = (processMode != 0);
 
     String html = R"html(
 <!DOCTYPE html><html lang="en"><head>
@@ -363,7 +358,9 @@ void setupHttpRoot() {
   <div class="field">
     <span class="field-label">Setpoint</span>
     <div class="slider-row">
-      <input type="range" min="0" max="100" step="0.5" value=")html" + String(setpointValue,1) + R"html(" oninput="setSetpoint(this.value)">
+      <input type="range" id="setpoint" min="0" max="100" step="0.5"
+             value=")html" + String(setpointValue,1) + R"html("
+             oninput="setSetpoint(this.value)" )html" + String(setpointEnabled ? "" : "disabled") + R"html(>
       <div class="numeric-box" id="setpointValueBox">)html" + String(setpointValue,1) + R"html(</div>
       <div class="unit-box">)html" + unit + R"html(</div>
     </div>
@@ -406,7 +403,7 @@ void setupHttpRoot() {
     }
     html += R"html(</section>)html";
 
-    // Config card (OTA + Restart disabled when running)
+    // Config card
     html += R"html(
 <section class="card">
   <div class="card-title">Configuration</div>
@@ -423,7 +420,10 @@ void setupHttpRoot() {
 async function send(cmd){await fetch('/',{method:'POST',headers:{'Content-Type':'text/plain'},body:cmd});setTimeout(()=>location.reload(),300);}
 function setProcess(v){send('PROCESS:'+v);}
 function setControl(v){send('CONTROL:'+v);}
-function setSetpoint(v){document.getElementById('setpointValueBox').textContent=v;send('SETPOINT:'+v);}
+function setSetpoint(v){
+  document.getElementById('setpointValueBox').textContent=v;
+  send('SETPOINT:'+v);
+}
 </script>
 </body></html>)html";
 
@@ -457,8 +457,12 @@ void setupHttpPost() {
         controlMode = cmd.substring(8).toInt();
         Serial.println("Control mode = " + String(controlMode));
       } else if (cmd.startsWith("SETPOINT:")) {
-        setpointValue = cmd.substring(9).toFloat();
-        Serial.println("Setpoint = " + String(setpointValue));
+        if (processMode == 0) {
+          Serial.println("Setpoint change ignored: process OFF");
+        } else {
+          setpointValue = cmd.substring(9).toFloat();
+          Serial.println("Setpoint = " + String(setpointValue));
+        }
       } else if (cmd.startsWith("SSR:")) {
         String which = cmd.substring(4);
         if (which=="S1") ssr1Enabled = !ssr1Enabled;
@@ -519,7 +523,6 @@ void setup() {
 }
 
 void loop() {
-  // Sensors 750 ms
   static unsigned long lastTemp = 0;
   if (millis() - lastTemp > 750) {
     sensors.requestTemperatures();
@@ -529,7 +532,6 @@ void loop() {
     lastTemp = millis();
   }
 
-  // Control 100 ms
   static unsigned long lastControl = 0;
   if (millis() - lastControl > 100) {
     if (isRunning) {
@@ -549,7 +551,6 @@ void loop() {
     lastControl = millis();
   }
 
-  // Debug 2 s
   static unsigned long lastPrint = 0;
   if (millis() - lastPrint > 2000) {
     Serial.printf("FW %s | T1:%.1f T2:%.1f T3:%.1f | Mode:%d/%d Run:%d | D:%.1f R:%.1f\n",
