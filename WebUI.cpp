@@ -1,9 +1,8 @@
 #include <Arduino.h>
 #include <WiFi.h>
-#include <LittleFS.h>
 #include <ESPAsyncWebServer.h>
 #include <ArduinoJson.h>
-
+#include <LittleFS.h>
 #include "Config.h"
 #include "State.h"
 #include "Sensors.h"
@@ -13,16 +12,21 @@
 AsyncWebServer server(80);
 
 void initWebServer() {
-  if (!LittleFS.begin(true)) {
-    Serial.println("LittleFS mount failed");
-  } else {
-    Serial.println("LittleFS mounted successfully");
+  // LittleFS already mounted in setup(), just verify
+  if (!LittleFS.begin()) {
+    Serial.println("[WARN] LittleFS not mounted in initWebServer");
   }
 
   // Root: GET = UI, POST = commands
   server.on("/", HTTP_GET, [](AsyncWebServerRequest *request) {
     request->send(LittleFS, "/webui.html", "text/html");
   });
+
+  // Serve favicon
+  server.serveStatic("/favicon.ico", LittleFS, "/favicon.ico", "image/x-icon");
+  
+  // Serve logo
+  server.serveStatic("/Logo.png", LittleFS, "/Logo.png", "image/png");
 
   server.on("/", HTTP_POST,
     [](AsyncWebServerRequest *request) {},
@@ -85,7 +89,7 @@ void initWebServer() {
           Serial.println("SSR change ignored: process running");
         } else {
           String which = body.substring(4);
-          if      (which == "S1") ssr1Enabled = !ssr1Enabled;
+          if (which == "S1") ssr1Enabled = !ssr1Enabled;
           else if (which == "S2") ssr2Enabled = !ssr2Enabled;
           else if (which == "S3") ssr3Enabled = !ssr3Enabled;
           else if (which == "S4") ssr4Enabled = !ssr4Enabled;
@@ -96,7 +100,7 @@ void initWebServer() {
             (which == "S2") ? ssr2Enabled :
             (which == "S3") ? ssr3Enabled :
             (which == "S4") ? ssr4Enabled :
-                              ssr5Enabled;
+            ssr5Enabled;
 
           Serial.println("SSR " + which + " -> " + String(state));
         }
@@ -105,54 +109,65 @@ void initWebServer() {
       request->send(200, "text/plain", "OK");
     });
 
-  // State endpoint - UPDATED for unified sensors
+  // /state: core + sensors + generic map[]
   server.on("/state", HTTP_GET, [](AsyncWebServerRequest *request) {
-    StaticJsonDocument<1024> doc;
+    DynamicJsonDocument doc(2048);
 
-    doc["fw"]          = FIRMWARE_VERSION;
+    // Core
+    doc["fw"] = FIRMWARE_VERSION;
     doc["processMode"] = (int)processMode;
     doc["controlMode"] = (int)controlMode;
-    doc["setpoint"]    = setpointValue;
-    doc["isRunning"]   = isRunning;
-    doc["distPower"]   = distillerPower;
-    doc["rectPower"]   = rectifierPower;
-
+    doc["setpoint"] = setpointValue;
+    doc["isRunning"] = isRunning;
+    doc["distPower"] = distillerPower;
+    doc["rectPower"] = rectifierPower;
     doc["ssr1"] = ssr1Enabled;
     doc["ssr2"] = ssr2Enabled;
     doc["ssr3"] = ssr3Enabled;
     doc["ssr4"] = ssr4Enabled;
     doc["ssr5"] = ssr5Enabled;
 
-    // Legacy 3-role temps (still used by main panel + control)
+    // Legacy T1/T2/T3 temps
     doc["t1"] = tankTemp;
     doc["t2"] = roomTemp;
     doc["t3"] = colTemp;
 
-    doc["ip"]   = WiFi.localIP().toString();
+    doc["ip"] = WiFi.localIP().toString();
     doc["ssid"] = WiFi.SSID();
+    doc["board"] = "JC3248W535";
 
-    // Unified sensors array (all types: temp, pressure, level...)
-    JsonArray sensorsArr = doc.createNestedArray("sensors");
+    JsonObject pinOpts = doc.createNestedObject("pinOptions");
+    JsonArray tempPins = pinOpts.createNestedArray("temp");
+    tempPins.add(17);  // OneWire bus
+    JsonArray analogPins = pinOpts.createNestedArray("analog");
+    analogPins.add(5);
+    analogPins.add(6);
+    analogPins.add(7);
+
+    // Generic sensor map
+    JsonArray mapArray = doc.createNestedArray("map");
+    mapArray.add(idxT1);
+    mapArray.add(idxT2);
+    mapArray.add(idxT3);
+
+    // Generic sensor list
+    JsonArray sensorsArray = doc.createNestedArray("sensors");
     for (int i = 0; i < sensorCount; i++) {
-      JsonObject s = sensorsArr.createNestedObject();
-      s["idx"]   = allSensors[i].idx;
-      s["type"]  = allSensors[i].type;
-      s["pin"]   = allSensors[i].pin;
-      s["addr"]  = allSensors[i].addr;
+      JsonObject s = sensorsArray.createNestedObject();
+      s["idx"] = allSensors[i].idx;
+      s["name"] = allSensors[i].name;
+      s["type"] = allSensors[i].type;
       s["value"] = allSensors[i].value;
+      s["pin"] = allSensors[i].pin;
+      s["addr"] = allSensors[i].addr;
     }
 
-    // Current mapping indices (legacy temp roles only)
-    doc["map_t1"] = idxT1;
-    doc["map_t2"] = idxT2;
-    doc["map_t3"] = idxT3;
-
-    String out;
-    serializeJson(doc, out);
-    request->send(200, "application/json", out);
+    String output;
+    serializeJson(doc, output);
+    request->send(200, "application/json", output);
   });
 
-  // Mapping config endpoint (legacy T1/T2/T3 only)
+  // /config/sensors POST: update mapping and names/types
   server.on("/config/sensors", HTTP_POST,
     [](AsyncWebServerRequest *request) {},
     NULL,
@@ -163,23 +178,43 @@ void initWebServer() {
         body += (char)data[i];
       }
 
-      StaticJsonDocument<128> doc;
+      Serial.printf("[POST /config/sensors] Receiving %d bytes\n", len);
+
+      DynamicJsonDocument doc(1024);
       DeserializationError err = deserializeJson(doc, body);
       if (err) {
-        request->send(400, "text/plain", "Bad JSON");
+        Serial.printf("[ERROR] JSON parse failed: %s\n", err.c_str());
+        request->send(400, "text/plain", "Invalid JSON");
         return;
       }
 
-      if (doc.containsKey("t1")) idxT1 = doc["t1"].as<int>();
-      if (doc.containsKey("t2")) idxT2 = doc["t2"].as<int>();
-      if (doc.containsKey("t3")) idxT3 = doc["t3"].as<int>();
+      JsonArray mapArr = doc["map"];
+      JsonArray namesArr = doc["names"];
+      JsonArray typesArr = doc["types"];
 
-      Serial.printf("Sensor map updated: T1=%d T2=%d T3=%d\n", idxT1, idxT2, idxT3);
+      if (!mapArr || !namesArr || !typesArr) {
+        Serial.println("[ERROR] Missing required arrays in payload");
+        request->send(400, "text/plain", "Missing map/names/types");
+        return;
+      }
 
-      request->send(200, "application/json", "{\"ok\":true}");
+      Serial.println("[INFO] Updating sensor mapping:");
+      for (int i = 0; i < 3 && i < (int)mapArr.size(); i++) {
+        int physicalIdx = mapArr[i] | -1;
+        String name = (i < (int)namesArr.size()) ? namesArr[i].as<String>() : "";
+        String type = (i < (int)typesArr.size()) ? typesArr[i].as<String>() : "temp";
+
+        Serial.printf("  T%d -> Physical sensor %d, name='%s', type='%s'\n",
+                      i + 1, physicalIdx, name.c_str(), type.c_str());
+
+        updateSensorMapping(i, physicalIdx, name, type);
+      }
+
+      saveSensorConfig();
+      Serial.println("[INFO] Sensor configuration saved");
+
+      request->send(200, "text/plain", "OK");
     });
-
-  server.serveStatic("/favicon.ico", LittleFS, "/favicon.ico", "image/x-icon");
 
   server.begin();
   Serial.println("Web server started on port 80");

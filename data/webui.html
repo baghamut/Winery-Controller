@@ -4,6 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Winery Control</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico">
   <style>
     :root {
       --bg-main: #111;
@@ -39,14 +40,21 @@
 
     .app-header {
       display: flex;
-      justify-content: space-between;
       align-items: center;
       margin-bottom: 12px;
       gap: 8px;
     }
 
+    .app-logo {
+      height: 48px;
+      width: auto;
+      object-fit: contain;
+      margin-right: 12px;
+    }
+
     .app-header-main {
       text-align: left;
+      flex: 0 0 auto;
     }
 
     .app-title {
@@ -75,6 +83,7 @@
       letter-spacing: 0.08em;
       cursor: pointer;
       white-space: nowrap;
+      margin-left: auto;
     }
 
     .nav-btn:hover {
@@ -345,11 +354,12 @@
     .sensor-table-header,
     .sensor-table-row {
       display: grid;
-      grid-template-columns: 0.7fr 2.1fr 1.2fr;
+      grid-template-columns: 1.3fr 1.3fr 1.4fr;
       column-gap: 8px;
       font-size: 0.8rem;
       padding: 3px 0;
       border-bottom: 1px solid #262626;
+      align-items: center;
     }
 
     .sensor-table-header {
@@ -362,25 +372,77 @@
       border-bottom: none;
     }
 
-    .sensor-label {
-      color: var(--text-muted);
+    .sensor-table-row[data-logical] {
+      padding: 8px 0;
     }
 
-    .sensor-addr {
+    .sensor-name-input,
+    .sensor-type-select,
+    .sensor-id-select {
+      width: 100%;
+      padding: 4px 6px;
+      border-radius: 4px;
+      border: 1px solid var(--border-subtle);
+      background: var(--bg-input);
       color: var(--text-main);
-      font-family: monospace;
-      font-size: 0.78rem;
+      font-size: 0.8rem;
     }
 
-    .sensor-temp {
-      color: var(--text-green);
-      text-align: right;
+    .sensor-name-input:focus,
+    .sensor-type-select:focus,
+    .sensor-id-select:focus {
+      outline: none;
+      border-color: var(--accent);
+      box-shadow: 0 0 0 1px rgba(255, 122, 26, 0.3);
+    }
+
+    .sensor-type-select {
+      text-transform: uppercase;
+      font-weight: 600;
+      letter-spacing: 0.05em;
+    }
+
+    @keyframes flash-success {
+      0%, 100% { background: var(--accent); }
+      50% { background: var(--text-green); }
+    }
+
+    @keyframes flash-error {
+      0%, 100% { background: var(--accent); }
+      50% { background: var(--accent-danger); }
+    }
+
+    .btn-flash-success {
+      animation: flash-success 0.4s ease-in-out 2;
+    }
+
+    .btn-flash-error {
+      animation: flash-error 0.4s ease-in-out 2;
+    }
+
+    @keyframes pulse-wait {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.5; }
+    }
+
+    .btn-ssr-waiting {
+      animation: pulse-wait 0.6s ease-in-out infinite;
+      cursor: wait !important;
+    }
+
+    .btn-ssr-flash-success {
+      animation: flash-success 0.3s ease-in-out 2;
+    }
+
+    .btn-ssr-flash-error {
+      animation: flash-error 0.3s ease-in-out 2;
     }
   </style>
 </head>
 <body>
   <div class="app-shell">
     <header class="app-header">
+      <img src="/Logo.png" alt="Logo" class="app-logo">
       <div class="app-header-main">
         <div class="app-title">VINODELNYA</div>
         <div class="app-subtitle" id="subtitle">Winery Controller</div>
@@ -434,16 +496,21 @@
 
         <div class="temp-label">Temperature Readings</div>
         <div class="row">
-          <span class="row-label">T1 - Tank:</span>
+          <span class="row-label" id="labelT1">Sensor 1:</span>
           <span class="row-value"><span id="t1">0.0</span> °C</span>
         </div>
         <div class="row">
-          <span class="row-label">T2 - Outdoor:</span>
+          <span class="row-label" id="labelT2">Sensor 2:</span>
           <span class="row-value"><span id="t2">0.0</span> °C</span>
         </div>
         <div class="row">
-          <span class="row-label">T3 - Column:</span>
+          <span class="row-label" id="labelT3">Sensor 3:</span>
           <span class="row-value"><span id="t3">0.0</span> °C</span>
+        </div>
+
+        <!-- CONTROL BUTTON -->
+        <div id="controlButton" style="margin-top: 16px;">
+          <button class="btn btn-start" id="startBtn" onclick="send('START')" disabled>Start Process</button>
         </div>
       </section>
 
@@ -455,14 +522,27 @@
       </section>
 
       <section class="card">
-        <div class="card-title">Control</div>
-        <div id="controlButton">
-          <button class="btn btn-start" id="startBtn" onclick="send('START')" disabled>Start Process</button>
+        <div class="card-title" style="display:flex; align-items:center; justify-content:space-between; gap:8px;">
+          <span>Diagnostic</span>
+          <button
+            type="button"
+            onclick="openStateJson()"
+            style="
+              padding:4px 10px;
+              border-radius:999px;
+              border:1px solid var(--border-subtle);
+              background:var(--bg-card);
+              color:var(--text-main);
+              font-size:0.7rem;
+              font-weight:600;
+              text-transform:uppercase;
+              letter-spacing:0.08em;
+              cursor:pointer;
+              white-space:nowrap;
+            ">
+            /state
+          </button>
         </div>
-      </section>
-
-      <section class="card">
-        <div class="card-title">Diagnostic</div>
         <div class="diag-row">
           <span>WiFi IP:</span>
           <span id="wifiIP">--</span>
@@ -482,29 +562,14 @@
     <div id="screen-config" style="display:none;">
       <section class="card">
         <div class="card-title">Sensor Mapping</div>
-        <div class="field">
-          <span class="field-label">T1 - Tank source</span>
-          <select id="t1_sel" onchange="saveSensorMap()"></select>
-        </div>
-        <div class="field">
-          <span class="field-label">T2 - Outdoor source</span>
-          <select id="t2_sel" onchange="saveSensorMap()"></select>
-        </div>
-        <div class="field">
-          <span class="field-label">T3 - Column source</span>
-          <select id="t3_sel" onchange="saveSensorMap()"></select>
-        </div>
-      </section>
-
-      <section class="card">
-        <div class="card-title">All Sensors</div>
         <div id="sensorTable">
           <div class="sensor-table-header">
-            <div>Label</div>
-            <div>Address</div>
-            <div style="text-align:right;">Temp</div>
+            <div>Name</div>
+            <div>Type</div>
+            <div style="text-align:right;">ID</div>
           </div>
         </div>
+        <button class="btn btn-primary" onclick="saveMapping()">Save Mapping</button>
       </section>
 
       <section class="card">
@@ -517,6 +582,7 @@
 
   <script>
     let currentScreen = "main";
+    let lastState = null;
 
     function toggleScreen() {
       const main = document.getElementById("screen-main");
@@ -528,6 +594,9 @@
         cfg.style.display = "block";
         btn.textContent = "Back";
         currentScreen = "config";
+        if (lastState) {
+          buildSensorTable(lastState);
+        }
       } else {
         main.style.display = "block";
         cfg.style.display = "none";
@@ -564,8 +633,36 @@
       send("SETPOINT:" + v);
     }
 
-    function toggleSSR(which) {
-      send("SSR:" + which);
+    async function toggleSSR(which) {
+      const btn = document.getElementById("btn-" + which);
+      if (!btn || btn.disabled) return;
+
+      btn.disabled = true;
+      btn.classList.add('btn-ssr-waiting');
+      
+      try {
+        await send("SSR:" + which);
+        await fetchState();
+        
+        btn.classList.remove('btn-ssr-waiting');
+        btn.classList.add('btn-ssr-flash-success');
+        
+        setTimeout(() => {
+          btn.classList.remove('btn-ssr-flash-success');
+          btn.disabled = false;
+        }, 600);
+        
+      } catch (err) {
+        console.error("SSR toggle error:", err);
+        
+        btn.classList.remove('btn-ssr-waiting');
+        btn.classList.add('btn-ssr-flash-error');
+        
+        setTimeout(() => {
+          btn.classList.remove('btn-ssr-flash-error');
+          btn.disabled = false;
+        }, 600);
+      }
     }
 
     function formatTemp(v) {
@@ -581,100 +678,257 @@
         const res = await fetch("/state", { cache: "no-store" });
         if (!res.ok) return;
         const s = await res.json();
+        lastState = s;
         applyState(s);
       } catch (e) {
         console.error("fetchState error", e);
       }
     }
 
-    function populateSensorSelects(s) {
-      const list = s.sensors || [];
-
-      function fillSelect(id) {
-        const el = document.getElementById(id);
-        if (!el) return;
-        el.innerHTML = "";
-
-        const optNone = document.createElement("option");
-        optNone.value = -1;
-        optNone.textContent = "None";
-        el.appendChild(optNone);
-
-        list.forEach((item) => {
-          const opt = document.createElement("option");
-          opt.value = item.idx;
-          opt.textContent = item.idx + " - " + item.addr;
-          el.appendChild(opt);
-        });
-      }
-
-      fillSelect("t1_sel");
-      fillSelect("t2_sel");
-      fillSelect("t3_sel");
-
-      if (document.getElementById("t1_sel")) {
-        document.getElementById("t1_sel").value = (s.map_t1 ?? -1);
-      }
-      if (document.getElementById("t2_sel")) {
-        document.getElementById("t2_sel").value = (s.map_t2 ?? -1);
-      }
-      if (document.getElementById("t3_sel")) {
-        document.getElementById("t3_sel").value = (s.map_t3 ?? -1);
-      }
+    function buildTypeOptions(currentType) {
+      const types = [
+        {value: "temp", label: "TEMP"},
+        {value: "pressure", label: "PRESSURE"}, 
+        {value: "level_cap", label: "LEVEL"}
+      ];
+      return types.map(t => 
+        `<option value="${t.value}"${t.value === currentType ? ' selected' : ''}>${t.label}</option>`
+      ).join('');
     }
 
-    async function saveSensorMap() {
-      const t1 = Number(document.getElementById("t1_sel").value);
-      const t2 = Number(document.getElementById("t2_sel").value);
-      const t3 = Number(document.getElementById("t3_sel").value);
-
-      const payload = { t1, t2, t3 };
-
-      try {
-        await fetch("/config/sensors", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(payload),
-        });
-      } catch (e) {
-        console.error("saveSensorMap failed", e);
+    function buildIdOptions(list, selectedIdx, filterType) {
+      let options = `<option value="-1"${selectedIdx == -1 ? " selected" : ""}>None</option>`;
+      
+      const filtered = list.filter(sensor => sensor.type === filterType);
+      
+      if (filtered.length === 0) {
+        options += `<option value="-1" disabled>No ${filterType} sensors</option>`;
+        return options;
       }
+      
+      filtered.forEach((sensor) => {
+        const id = sensor.idx;
+        const idText = sensor.addr && sensor.addr.length
+          ? sensor.addr
+          : (sensor.pin != null && sensor.pin >= 0 ? "GPIO" + sensor.pin : "-");
+        const label = (sensor.name && sensor.name.length ? sensor.name : ("S" + (id + 1)));
+        const sel = (id === selectedIdx) ? " selected" : "";
+        options += `<option value="${id}"${sel}>${id} - ${idText} (${label})</option>`;
+      });
+      
+      return options;
     }
 
-    function renderSensorTable(s) {
+    function onTypeChange(logicalIndex, typeSelect, sensors) {
+      const row = document.querySelector(`.sensor-table-row[data-logical="${logicalIndex}"]`);
+      if (!row) return;
+      
+      const idSelect = row.querySelector('.sensor-id-select');
+      if (!idSelect) return;
+      
+      const newType = typeSelect.value;
+      const currentId = parseInt(idSelect.value);
+      
+      let validSelection = false;
+      if (currentId >= 0) {
+        const sensor = sensors.find(s => s.idx === currentId);
+        if (sensor && sensor.type === newType) {
+          validSelection = true;
+        }
+      }
+      
+      idSelect.innerHTML = buildIdOptions(
+        sensors, 
+        validSelection ? currentId : -1, 
+        newType
+      );
+    }
+
+    function buildSensorTable(s) {
       const container = document.getElementById("sensorTable");
       if (!container) return;
 
       const list = s.sensors || [];
-      const temps = s.temps || [];
+      const map = s.map || [];
 
       let html = `
         <div class="sensor-table-header">
-          <div>Label</div>
-          <div>Address</div>
-          <div style="text-align:right;">Temp</div>
+          <div>Name</div>
+          <div>Type</div>
+          <div style="text-align:right;">ID</div>
         </div>
       `;
 
       if (list.length === 0) {
-        html += `<div class="sensor-table-row"><div class="sensor-label">None</div><div class="sensor-addr">No sensors found</div><div class="sensor-temp">--</div></div>`;
-      } else {
-        list.forEach((item, idx) => {
-          const label = "T" + (idx + 1);
-          const tempVal = (idx < temps.length) ? temps[idx] : NaN;
-          const tempText = formatTemp(tempVal);
-
-          html += `
-            <div class="sensor-table-row">
-              <div class="sensor-label">${label}</div>
-              <div class="sensor-addr">${item.addr}</div>
-              <div class="sensor-temp">${tempText}</div>
-            </div>
-          `;
-        });
+        html += `
+          <div class="sensor-table-row">
+            <div>No sensors</div>
+            <div></div>
+            <div style="text-align:right;">--</div>
+          </div>
+        `;
+        container.innerHTML = html;
+        return;
       }
 
+      const logicalSlots = [
+        { id: 0, defaultName: "Sensor 1" },
+        { id: 1, defaultName: "Sensor 2" },
+        { id: 2, defaultName: "Sensor 3" }
+      ];
+
+      logicalSlots.forEach((slot) => {
+        const logicalIndex = slot.id;
+        const physicalIdx = map.length > logicalIndex && map[logicalIndex] != null 
+          ? map[logicalIndex] 
+          : -1;
+        
+        let name = slot.defaultName;
+        let type = "temp";
+        
+        if (physicalIdx >= 0) {
+          const sensor = list.find(s => s.idx === physicalIdx);
+          if (sensor) {
+            name = sensor.name && sensor.name.length ? sensor.name : slot.defaultName;
+            type = sensor.type || "temp";
+          }
+        }
+
+        html += `
+          <div class="sensor-table-row" data-logical="${logicalIndex}">
+            <div>
+              <input class="sensor-name-input" data-logical="${logicalIndex}" value="${name}">
+            </div>
+            <div>
+              <select class="sensor-type-select" data-logical="${logicalIndex}">
+                ${buildTypeOptions(type)}
+              </select>
+            </div>
+            <div>
+              <select class="sensor-id-select" data-logical="${logicalIndex}">
+                ${buildIdOptions(list, physicalIdx, type)}
+              </select>
+            </div>
+          </div>
+        `;
+      });
+
       container.innerHTML = html;
+      
+      document.querySelectorAll('.sensor-type-select').forEach(select => {
+        const logicalIdx = parseInt(select.dataset.logical);
+        select.addEventListener('change', function() {
+          onTypeChange(logicalIdx, this, list);
+        });
+      });
+    }
+
+    function applyNamesToMain(s) {
+      const sensors = s.sensors || [];
+      const map = s.map || [];
+
+      function nameForLogicalSlot(slotIndex, fallback) {
+        if (map.length <= slotIndex) return fallback;
+        const physIdx = map[slotIndex];
+        if (physIdx == null || physIdx < 0) return fallback;
+        const sensor = sensors.find((it) => it.idx === physIdx);
+        if (!sensor) return fallback;
+        return sensor.name && sensor.name.length ? sensor.name : fallback;
+      }
+
+      document.getElementById("labelT1").textContent =
+        nameForLogicalSlot(0, "Sensor 1") + ":";
+      document.getElementById("labelT2").textContent =
+        nameForLogicalSlot(1, "Sensor 2") + ":";
+      document.getElementById("labelT3").textContent =
+        nameForLogicalSlot(2, "Sensor 3") + ":";
+    }
+
+    async function saveMapping() {
+      if (!lastState) return;
+
+      const saveBtn = document.querySelector('button[onclick="saveMapping()"]');
+      if (!saveBtn) return;
+
+      saveBtn.disabled = true;
+      const originalText = saveBtn.textContent;
+      saveBtn.textContent = "Saving...";
+
+      const logicalSlots = 3;
+      const map = [];
+      const names = [];
+      const types = [];
+
+      for (let i = 0; i < logicalSlots; i++) {
+        const row = document.querySelector(`.sensor-table-row[data-logical="${i}"]`);
+        if (!row) continue;
+
+        const nameInp = row.querySelector('.sensor-name-input');
+        const typeSel = row.querySelector('.sensor-type-select');
+        const idSel = row.querySelector('.sensor-id-select');
+        
+        const physicalIdx = idSel ? parseInt(idSel.value) : -1;
+        const name = nameInp ? nameInp.value.trim() : '';
+        const type = typeSel ? typeSel.value : 'temp';
+
+        map.push(physicalIdx);
+        names.push(name);
+        types.push(type);
+      }
+
+      const payload = { 
+        map,
+        names, 
+        types
+      };
+
+      console.log("Saving mapping:", payload);
+
+      try {
+        const response = await fetch("/config/sensors", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+        
+        if (response.ok) {
+          console.log("Mapping saved successfully");
+          await fetchState();
+          
+          saveBtn.classList.add('btn-flash-success');
+          saveBtn.textContent = "Saved!";
+          
+          setTimeout(() => {
+            saveBtn.classList.remove('btn-flash-success');
+            saveBtn.textContent = originalText;
+            saveBtn.disabled = false;
+          }, 800);
+          
+        } else {
+          const errorText = await response.text();
+          console.error("Save failed:", response.status, errorText);
+          
+          saveBtn.classList.add('btn-flash-error');
+          saveBtn.textContent = "Error!";
+          
+          setTimeout(() => {
+            saveBtn.classList.remove('btn-flash-error');
+            saveBtn.textContent = originalText;
+            saveBtn.disabled = false;
+          }, 800);
+        }
+      } catch (e) {
+        console.error("saveMapping failed", e);
+        
+        saveBtn.classList.add('btn-flash-error');
+        saveBtn.textContent = "Error!";
+        
+        setTimeout(() => {
+          saveBtn.classList.remove('btn-flash-error');
+          saveBtn.textContent = originalText;
+          saveBtn.disabled = false;
+        }, 800);
+      }
     }
 
     function applyState(s) {
@@ -718,8 +972,12 @@
       document.getElementById("t3").textContent = formatTemp(s.t3);
 
       renderSsrButtons(process, s, running);
-      renderSensorTable(s);
-      populateSensorSelects(s);
+
+      if (currentScreen === "config") {
+        buildSensorTable(s);
+      }
+
+      applyNamesToMain(s);
 
       let enabledSSR = 0;
       if (process === 1) {
@@ -729,9 +987,10 @@
       }
 
       const controlBtnDiv = document.getElementById("controlButton");
-      const canStart = process !== 0 &&
-                       Number(s.setpoint || 0) > 0 &&
-                       enabledSSR > 0;
+      const canStart =
+        process !== 0 &&
+        Number(s.setpoint || 0) > 0 &&
+        enabledSSR > 0;
 
       if (running) {
         controlBtnDiv.innerHTML =
@@ -790,7 +1049,7 @@
 
       ["S1", "S2", "S3", "S4", "S5"].forEach((id) => {
         const btn = document.getElementById("btn-" + id);
-        if (btn && !btn.disabled) {
+        if (btn && !btn.hasAttribute('disabled')) {
           btn.addEventListener("click", () => toggleSSR(id));
         }
       });
@@ -812,11 +1071,18 @@
       );
     }
 
+    function openStateJson() {
+      window.open("/state", "_blank");
+    }
+
     window.addEventListener("DOMContentLoaded", () => {
       fetchState();
-      setInterval(fetchState, 1000);
+      setInterval(() => {
+        if (currentScreen === "main") {
+          fetchState();
+        }
+      }, 3000);
     });
   </script>
-
 </body>
 </html>

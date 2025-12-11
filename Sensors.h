@@ -1,4 +1,3 @@
-// Sensors.h
 #pragma once
 
 #include <Arduino.h>
@@ -8,24 +7,33 @@
 // Max supported sensors (all types)
 static const uint8_t MAX_SENSORS = 16;
 
-// Unified sensor structure
 struct Sensor {
-  String type;      // "temp", "pressure", "level_us", "level_cap"
-  int pin;          // GPIO (-1 for bus sensors)
-  float value;      // Latest reading
-  String addr;      // For OneWire (empty for GPIO sensors)
-  int idx;          // Discovery index 0..MAX_SENSORS-1
+  String name;    // Editable display name
+  String type;    // "temp", "pressure", "level_cap", ...
+  int pin;        // GPIO (-1 for bus sensors)
+  float value;    // Latest reading
+  String addr;    // OneWire ROM as hex, or empty
+  int idx;        // Discovery index
 };
 
-// Discovered sensors array + count
 extern Sensor allSensors[MAX_SENSORS];
 extern int sensorCount;
 
-// Legacy temperature mapping (for backwards compat)
-extern int idxT1, idxT2, idxT3;
+// Legacy T1/T2/T3 mappings
+extern int idxT1;
+extern int idxT2;
+extern int idxT3;
 
-// Public API
 void initSensors();
 void updateSensors();
 float readByIndex(int idx);
-void registerSensor(String type, int pin);
+void registerSensor(const String &type, int pin);
+
+// Enhanced configuration persistence
+void loadSensorConfig();
+void saveSensorConfig();
+void updateSensorMapping(int logicalSlot, int physicalIdx, String name, String type);
+
+// Legacy name-only persistence (kept for backward compatibility)
+void loadSensorNames();
+void saveSensorNames();

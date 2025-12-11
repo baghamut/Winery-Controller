@@ -1,6 +1,6 @@
 // ============================================
 // Winery Controller with GitHub OTA
-// ESP32-S3 + 5x SSR + 3x DS18B20 + PID + Web UI
+// ESP32-S3 + 5x SSR + DS18B20 + PID + Web UI
 // ============================================
 
 #include <WiFi.h>
@@ -16,6 +16,14 @@ void setup() {
   Serial.begin(115200);
   delay(2000);
   Serial.println("BOOTING Winery...");
+  
+  // Mount LittleFS FIRST
+  if (!LittleFS.begin(true)) {
+    Serial.println("[ERROR] LittleFS mount failed");
+  } else {
+    Serial.println("[OK] LittleFS mounted");
+  }
+  
   initState();
   initPins();
 
@@ -28,17 +36,27 @@ void setup() {
   Serial.print("WiFi connected, IP: ");
   Serial.println(WiFi.localIP());
 
+  // Discover Dallas sensors but DON'T load config yet
   initSensors();
+
+  // Register analog sensors
+  registerSensor("pressure", 5);
+  registerSensor("level_cap", 6);
+
+  // NOW load config after ALL sensors are registered
+  loadSensorConfig();
   
-  // NEW: Register additional sensor types (v1.4.0)
-  registerSensor("pressure", 34);    // MPX5010 on GPIO34 (ADC1_CH6)
-  registerSensor("level_cap", 36);   // Capacitive strip on GPIO36 (ADC1_CH0)
-  
+  Serial.printf("[DEBUG] After final config load - T1:%d T2:%d T3:%d\n", idxT1, idxT2, idxT3);
+  for (int i = 0; i < sensorCount; i++) {
+    Serial.printf("[DEBUG] Final sensor %d: name='%s' type='%s'\n", 
+                  i, allSensors[i].name.c_str(), allSensors[i].type.c_str());
+  }
+
   initWebServer();
 }
 
 void loop() {
-  updateSensors();  // CHANGED: unified sensor update (all types)
+  updateSensors();
   updateControlLoop();
 
   static unsigned long lastPrint = 0;
