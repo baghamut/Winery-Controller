@@ -1,12 +1,3 @@
-// =============================================================================
-//  web_ui.cpp – Web UI mirroring LVGL (Mode / Control / Monitor)
-// =============================================================================
-#include <Arduino.h>
-#include <WebServer.h>
-#include "web_ui.h"
-#include "ui_strings.h"
-
-const char INDEX_HTML[] PROGMEM = R"HTML(
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -1110,50 +1101,3 @@ hr.divider{
 </script>
 </body>
 </html>
-)HTML";
-
-void webUiRegisterHandlers(WebServer& server)
-{
-    server.on("/", HTTP_GET, [&server]() {
-        String page(FPSTR(INDEX_HTML));
-
-        page.replace("APP_TITLE_PLACEHOLDER",        STR_APP_TITLE);
-        page.replace("APP_SUBTITLE_PLACEHOLDER",     STR_APP_SUBTITLE);
-
-        page.replace("STATUS_RUNNING_PLACEHOLDER",   STR_STATUS_RUNNING);
-        page.replace("STATUS_STOPPED_PLACEHOLDER",   STR_STATUS_STOPPED);
-        page.replace("STATUS_SAFETY_PLACEHOLDER",    STR_STATUS_SAFETY);
-
-        page.replace("TITLE_MODE_PLACEHOLDER",       STR_TITLE_MODE);
-        page.replace("TITLE_MODE_SEL_PLACEHOLDER",   STR_TITLE_MODE_SEL);
-        page.replace("TITLE_MONITOR_PLACEHOLDER",    STR_TITLE_MONITOR);
-        page.replace("TITLE_CTRL_PLACEHOLDER",       STR_TITLE_CTRL);
-        page.replace("TITLE_CTRL_DIST_PLACEHOLDER",  STR_TITLE_CTRL_DIST);
-        page.replace("TITLE_CTRL_RECT_PLACEHOLDER",  STR_TITLE_CTRL_RECT);
-
-        page.replace("PROC_DIST_PLACEHOLDER",        STR_PROC_DIST);
-        page.replace("PROC_RECT_PLACEHOLDER",        STR_PROC_RECT);
-
-        page.replace("SENSOR1_NAME_PLACEHOLDER",     STR_SENSOR_NAME1);
-        page.replace("SENSOR2_NAME_PLACEHOLDER",     STR_SENSOR_NAME2);
-        page.replace("SENSOR3_NAME_PLACEHOLDER",     STR_SENSOR_NAME3);
-
-        page.replace("MON_PRESSURE_PLACEHOLDER",     STR_MON_PRESSURE);
-        page.replace("MON_LEVEL_PLACEHOLDER",        STR_MON_LEVEL);
-        page.replace("MON_FLOW_PLACEHOLDER",         STR_MON_FLOW);
-        page.replace("MON_TOTAL_PLACEHOLDER",        STR_MON_TOTAL);
-        page.replace("MON_SSRS_PLACEHOLDER",         STR_MON_SSRS);
-
-        page.replace("LEVEL_OK_PLACEHOLDER",         STR_LEVEL_OK);
-        page.replace("LEVEL_LOW_PLACEHOLDER",        STR_LEVEL_LOW);
-        page.replace("OFFLINE_PLACEHOLDER",          STR_OFFLINE);
-        page.replace("UNIT_DEGC_PLACEHOLDER",        STR_UNIT_DEGC);
-
-        page.replace("BTN_BACK_PLACEHOLDER",         STR_BTN_BACK);
-        page.replace("BTN_SAVE_PLACEHOLDER",         STR_BTN_SAVE);
-        page.replace("BTN_START_PLACEHOLDER",        STR_BTN_START);
-        page.replace("BTN_STOP_PLACEHOLDER",         STR_BTN_STOP);
-
-        server.send(200, "text/html; charset=utf-8", page);
-    });
-}
