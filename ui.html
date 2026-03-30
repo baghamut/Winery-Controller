@@ -549,6 +549,25 @@ hr.divider{
 </div>
 
 <script>
+// Read device IP from URL hash set by the bootstrap redirect
+var DEVICE = (function(){
+  var h = location.hash.replace('#', '');
+  return h ? 'http://' + h : '';
+})();
+
+// All fetch calls must be prefixed with DEVICE:
+function send(cmd){
+  return fetch(DEVICE + "/", {
+    method: "POST",
+    headers: {"Content-Type": "text/plain"},
+    body: cmd
+  });
+}
+
+async function fetchState(){
+  var r = await fetch(DEVICE + "/state", {cache:"no-store"});
+  // ... rest unchanged
+}
 (function(){
   var STR = {
     BTN_BACK:        "BTN_BACK_PLACEHOLDER",
