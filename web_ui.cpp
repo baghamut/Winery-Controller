@@ -1,1159 +1,820 @@
 // =============================================================================
-//  web_ui.cpp – Web UI mirroring LVGL (Mode / Control / Monitor)
+// web_ui.cpp – Full embedded Web UI
+//
+// Shared-string/state alignment:
+// • Uses shared labels and offline thresholds from /state.
+// • Avoids hardcoded Room/Tank/Pillar/Offline/-100 sentinel logic.
+// • Keeps backend command formats unchanged.
 // =============================================================================
-#include <Arduino.h>
-#include <WebServer.h>
 #include "web_ui.h"
-#include "ui_strings.h"
+#include "config.h"
+#include "state.h"
+#include "control.h"
 
-const char INDEX_HTML[] PROGMEM = R"HTML(
+static void handleRoot(WebServer& server)
+{
+    const char* html = R"rawliteral(
 <!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>APP_TITLE_PLACEHOLDER – APP_SUBTITLE_PLACEHOLDER</title>
-<style>
-:root{
-  --bg-main:#111111;
-  --bg-card:#202020;
-  --bg-row:#181818;
-  --accent:#ff7a1a;
-  --accent-danger:#e02424;
-  --accent-green:#65ff7a;
-  --text-main:#f5f5f5;
-  --text-muted:#b3b3b3;
-  --border-subtle:#333333;
-}
-*{box-sizing:border-box;margin:0;padding:0}
-body{
-  font-family:system-ui,-apple-system,sans-serif;
-  background:#000;
-  color:var(--text-main);
-  display:flex;
-  justify-content:center;
-  padding:24px 12px;
-}
-.app-shell{
-  width:100%;
-  max-width:520px;
-}
-
-/* Header bar */
-.app-header{
-  display:flex;
-  justify-content:space-between;
-  align-items:flex-start;
-  gap:8px;
-  margin-bottom:8px;
-}
-.app-header-main{
-  flex:1 1 auto;
-}
-.app-title{
-  font-size:1.6rem;
-  font-weight:700;
-  letter-spacing:.12em;
-  text-transform:uppercase;
-  color:var(--accent);
-}
-.app-subtitle{
-  font-size:.9rem;
-  color:var(--text-muted);
-  margin-top:4px;
-}
-.header-status{
-  text-align:right;
-  font-size:.8rem;
-}
-.header-status-main{
-  font-weight:700;
-  text-transform:uppercase;
-}
-.header-status-line{
-  margin-top:2px;
-  color:var(--text-muted);
-}
-hr.divider{
-  border:none;
-  border-top:2px solid var(--accent);
-  margin:8px auto 14px;
-}
-
-/* Card */
-.card{
-  background:var(--bg-card);
-  border-radius:12px;
-  padding:16px;
-  margin-bottom:14px;
-  box-shadow:0 2px 8px rgba(0,0,0,.5);
-}
-.card-title{
-  font-size:.85rem;
-  font-weight:600;
-  text-transform:uppercase;
-  letter-spacing:.14em;
-  color:var(--accent);
-  margin-bottom:12px;
-}
-
-/* Mode screen */
-.mode-row{
-  display:flex;
-  gap:12px;
-}
-.mode-btn{
-  flex:1;
-  padding:26px 12px;
-  border-radius:10px;
-  border:2px solid var(--accent);
-  background:#303030;
-  color:var(--accent);
-  font-size:1.1rem;
-  font-weight:700;
-  text-transform:uppercase;
-  letter-spacing:.08em;
-  cursor:pointer;
-  transition:.2s;
-}
-.mode-btn:hover{
-  background:var(--accent);
-  color:#111;
-}
-.mode-btn.active{
-  background:var(--accent);
-  color:#111;
-}
-
-/* Control screen – SSR rows */
-.ssr-row{
-  display:flex;
-  align-items:center;
-  gap:8px;
-  margin:4px 0;
-  padding:4px 6px;
-  border-radius:6px;
-  background:var(--bg-row);
-}
-.ssr-label{
-  width:52px;
-  font-weight:600;
-  color:var(--text-muted);
-}
-.ssr-slider{
-  flex:1;
-}
-.ssr-slider input[type=range]{
-  width:100%;
-  accent-color:var(--accent);
-}
-.ssr-percentage{
-  width:48px;
-  text-align:center;
-  font-size:.85rem;
-  color:var(--text-muted);
-}
-.ssr-toggle{
-  display:flex;
-  align-items:center;
-  gap:4px;
-}
-
-/* Switch */
-.switch{
-  position:relative;
-  display:inline-block;
-  width:40px;
-  height:20px;
-}
-.switch input{
-  opacity:0;
-  width:0;
-  height:0;
-}
-.slider-switch{
-  position:absolute;
-  cursor:pointer;
-  inset:0;
-  background-color:#555;
-  transition:.2s;
-  border-radius:34px;
-}
-.slider-switch:before{
-  position:absolute;
-  content:"";
-  height:16px;
-  width:16px;
-  left:2px;
-  bottom:2px;
-  background-color:#fff;
-  transition:.2s;
-  border-radius:50%;
-}
-.switch input:checked + .slider-switch{
-  background-color:var(--accent);
-}
-.switch input:checked + .slider-switch:before{
-  transform:translateX(20px);
-}
-
-/* Sensor limits row (3 buttons) */
-.limits-row{
-  margin-top:10px;
-  padding:6px;
-  border-radius:6px;
-  background:var(--bg-row);
-  display:flex;
-  align-items:center;
-  gap:8px;
-}
-.limits-label{
-  font-weight:600;
-  color:var(--text-muted);
-  font-size:.85rem;
-  flex-shrink:0;
-}
-.limits-btns{
-  flex:1;
-  display:flex;
-  gap:6px;
-}
-.limit-sensor-btn{
-  flex:1;
-  padding:5px 4px;
-  border-radius:4px;
-  border:1px solid #555555;
-  background:#383838;
-  color:var(--text-main);
-  font-size:.75rem;
-  font-weight:600;
-  cursor:pointer;
-  text-align:center;
-  white-space:nowrap;
-  overflow:hidden;
-  text-overflow:ellipsis;
-  transition:.15s;
-}
-.limit-sensor-btn:hover{
-  border-color:var(--accent);
-  color:var(--accent);
-}
-.limit-sensor-btn.active{
-  border-color:var(--accent);
-  background:var(--accent);
-  color:#111;
-}
-
-/* Inline tmax editor */
-.tmax-editor{
-  margin-top:8px;
-  padding:12px;
-  border-radius:8px;
-  background:var(--bg-row);
-  border:1px solid var(--border-subtle);
-}
-.tmax-editor-title{
-  color:var(--accent);
-  font-weight:700;
-  font-size:.85rem;
-  text-transform:uppercase;
-  letter-spacing:.1em;
-  margin-bottom:10px;
-}
-.tmax-editor-controls{
-  display:flex;
-  align-items:center;
-  justify-content:space-evenly;
-  gap:6px;
-  margin-bottom:10px;
-}
-.tmax-adj-btn{
-  min-width:48px;
-  padding:6px 0;
-  border-radius:6px;
-  border:1px solid var(--accent);
-  background:var(--bg-main);
-  color:var(--text-main);
-  font-size:.85rem;
-  font-weight:600;
-  cursor:pointer;
-  text-align:center;
-}
-.tmax-adj-btn:hover{
-  background:var(--accent);
-  color:#111;
-}
-.tmax-editor-controls input[type=number]{
-  width:88px;
-  padding:5px;
-  border-radius:4px;
-  border:1px solid var(--accent);
-  background:var(--bg-main);
-  color:var(--text-main);
-  font-size:1.1rem;
-  font-weight:700;
-  text-align:center;
-}
-
-/* Bottom button row */
-.control-actions{
-  display:flex;
-  gap:8px;
-  margin-top:12px;
-}
-.btn{
-  width:100%;
-  padding:10px 12px;
-  border-radius:6px;
-  border:none;
-  font-size:.9rem;
-  font-weight:600;
-  text-transform:uppercase;
-  letter-spacing:.06em;
-  cursor:pointer;
-  transition:.2s;
-}
-.btn:disabled{
-  opacity:.5;
-  cursor:not-allowed;
-}
-.btn-back{
-  background:#ee3b3b;
-  color:#ffffff;
-}
-.btn-start{
-  background:#008b00;
-  color:#ffffff;
-}
-.btn-stop{
-  background:var(--accent-danger);
-  color:#ffffff;
-}
-
-/* Monitor screen rows */
-.row{
-  display:flex;
-  justify-content:space-between;
-  align-items:center;
-  font-size:.9rem;
-  padding:4px 8px;
-  margin:2px 0;
-  border-radius:6px;
-  background:var(--bg-row);
-}
-.row span.label{
-  color:var(--text-muted);
-}
-.row span.value{
-  color:var(--text-main);
-}
-
-/* SSR pills in monitor */
-.ssr-pill{
-  display:inline-block;
-  padding:2px 6px;
-  margin:1px 2px;
-  border-radius:4px;
-  border:1px solid var(--border-subtle);
-  font-size:.8rem;
-}
-.ssr-pill.on{
-  border-color:var(--accent-green);
-  color:var(--accent-green);
-}
-.ssr-pill.off{
-  border-color:var(--accent-danger);
-  color:var(--accent-danger);
-}
-
-/* IP button in header (clickable area) */
-.header-ip{
-  cursor:pointer;
-}
-
-/* Threshold config card */
-.thresh-tabs{
-  display:flex;
-  gap:6px;
-  margin-bottom:10px;
-}
-.thresh-tab{
-  flex:1;
-  padding:6px 0;
-  border-radius:6px;
-  border:1px solid var(--accent);
-  background:var(--bg-main);
-  color:var(--text-muted);
-  font-size:.8rem;
-  font-weight:600;
-  text-transform:uppercase;
-  cursor:pointer;
-  text-align:center;
-}
-.thresh-tab.active{
-  background:var(--accent);
-  color:#111;
-}
-.thresh-row{
-  display:flex;
-  align-items:center;
-  gap:6px;
-  margin:4px 0;
-  padding:4px 6px;
-  border-radius:6px;
-  background:var(--bg-row);
-  font-size:.82rem;
-}
-.thresh-row .t-name{
-  width:84px;
-  color:var(--text-muted);
-  font-weight:600;
-  flex-shrink:0;
-}
-.thresh-row label{
-  color:var(--text-muted);
-  font-size:.75rem;
-  flex-shrink:0;
-}
-.thresh-row input[type=number]{
-  width:62px;
-  padding:3px 5px;
-  border-radius:4px;
-  border:1px solid var(--border-subtle);
-  background:var(--bg-main);
-  color:var(--text-main);
-  font-size:.82rem;
-  text-align:center;
-}
-.thresh-save{
-  width:100%;
-  margin-top:8px;
-  padding:7px 0;
-  border-radius:6px;
-  border:none;
-  background:#008b00;
-  color:#fff;
-  font-size:.85rem;
-  font-weight:600;
-  text-transform:uppercase;
-  cursor:pointer;
-}
-</style>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Cask & Crown Winery Controller</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap');
+    body { font-family: Inter, system-ui, sans-serif; }
+    .card { background: #202020; border: 1px solid #333; border-radius: 12px; }
+    .sensor-offline { color: #e02424; }
+    .sensor-warn { color: #ff7a1a; }
+    .sensor-danger { color: #e02424; animation: pulse 1s infinite; }
+    @keyframes pulse { 50% { opacity: 0.4; } }
+  </style>
 </head>
-<body>
-<div class="app-shell">
-  <header class="app-header">
-    <div class="app-header-main">
-      <div class="app-title" id="hdrTitle">APP_TITLE_PLACEHOLDER</div>
-      <div class="app-subtitle" id="subtitle">APP_SUBTITLE_PLACEHOLDER</div>
-    </div>
-    <div class="header-status">
-      <div class="header-status-main" id="hdrStatus">STATUS_STOPPED_PLACEHOLDER</div>
-      <div class="header-status-line" id="hdrLine1">SENSOR1_NAME_PLACEHOLDER: --</div>
-      <div class="header-status-line" id="hdrLine2">Max: --</div>
-      <div class="header-status-line header-ip" id="hdrLine3">IP: --</div>
-    </div>
-  </header>
-  <hr class="divider">
+<body class="bg-[#111111] text-[#f5f5f5] min-h-screen">
+  <div class="max-w-6xl mx-auto p-6">
 
-  <!-- MODE SCREEN -->
-  <div id="screen-mode">
-    <section class="card">
-      <div class="card-title" id="modeTitle">TITLE_MODE_SEL_PLACEHOLDER</div>
-      <div class="mode-row">
-        <button class="mode-btn" id="btnModeDist">PROC_DIST_PLACEHOLDER</button>
-        <button class="mode-btn" id="btnModeRect">PROC_RECT_PLACEHOLDER</button>
-      </div>
-    </section>
-  </div>
-
-  <!-- CONTROL SCREEN -->
-  <div id="screen-control" style="display:none;">
-    <section class="card">
-      <div class="card-title" id="controlTitle">TITLE_CTRL_PLACEHOLDER</div>
-      <div id="ssrControls"></div>
-
-      <!-- Sensor limits: 3 buttons, one per sensor, matching LVGL Control panel -->
-      <div class="limits-row">
-        <div class="limits-label">Limits:</div>
-        <div class="limits-btns" id="limitsBtns"><!-- filled by buildLimitButtons() --></div>
-      </div>
-
-      <!-- Inline tmax editor (hidden until a sensor button is clicked) -->
-      <div class="tmax-editor" id="tmaxEditor" style="display:none;">
-        <div class="tmax-editor-title">Set Sensor Max Temp</div>
-        <div class="tmax-editor-controls">
-          <button class="tmax-adj-btn" id="btnTmaxM5">-5</button>
-          <button class="tmax-adj-btn" id="btnTmaxM1">-1</button>
-          <input type="number" id="tmaxInput" step="0.5" min="0" max="200">
-          <button class="tmax-adj-btn" id="btnTmaxP1">+1</button>
-          <button class="tmax-adj-btn" id="btnTmaxP5">+5</button>
+    <div class="flex items-center justify-between mb-8 bg-[#202020] border border-[#333] rounded-2xl px-6 py-4">
+      <div class="flex items-center gap-3">
+        <div class="w-9 h-9 rounded-xl flex items-center justify-center bg-orange-500/15 border border-orange-400/30 text-orange-400">
+          <svg viewBox="0 0 24 24" class="w-6 h-6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M7 5.5c1.6-.8 3.3-1.2 5-1.2s3.4.4 5 1.2"/>
+            <path d="M7 18.5c1.6.8 3.3 1.2 5 1.2s3.4-.4 5-1.2"/>
+            <path d="M7 5.5c-1.2 1.7-1.8 4-1.8 6.5S5.8 16.8 7 18.5"/>
+            <path d="M17 5.5c1.2 1.7 1.8 4 1.8 6.5s-.6 4.8-1.8 6.5"/>
+            <path d="M9 4.9c-.9 1.8-1.4 4.3-1.4 7.1s.5 5.3 1.4 7.1"/>
+            <path d="M15 4.9c.9 1.8 1.4 4.3 1.4 7.1s-.5 5.3-1.4 7.1"/>
+            <path d="M8 8h8"/>
+            <path d="M7.4 12h9.2"/>
+            <path d="M8 16h8"/>
+          </svg>
         </div>
-        <div class="control-actions">
-          <button class="btn btn-back" id="btnTmaxBack">BTN_BACK_PLACEHOLDER</button>
-          <button class="btn btn-start" id="btnTmaxSave">BTN_SAVE_PLACEHOLDER</button>
+        <div>
+          <h1 id="app-title" class="text-2xl font-semibold tracking-tight">Cask &amp; Crown</h1>
+          <p class="text-xs text-gray-400 -mt-1"><span id="app-subtitle">Winery Controller</span> • FW <span id="fw">1.0.0</span></p>
         </div>
       </div>
-
-      <!-- Main control action buttons (hidden while tmax editor is open) -->
-      <div id="ctrlActions" class="control-actions">
-        <button class="btn btn-back"  id="btnBack">BTN_BACK_PLACEHOLDER</button>
-        <button class="btn btn-start" id="btnStart">BTN_START_PLACEHOLDER</button>
+      <div class="flex items-center gap-8 text-sm">
+        <div id="hdr-status" class="flex items-center gap-2 font-medium"></div>
+        <div id="hdr-t1" class="flex items-center gap-1"></div>
+        <div id="hdr-max" class="flex items-center gap-1 text-gray-400"></div>
+        <div id="hdr-total" class="flex items-center gap-1 text-gray-400"></div>
+        <div onclick="showWifiModal()" class="cursor-pointer flex items-center gap-1 hover:text-orange-400">
+          <span id="hdr-ip" class="font-mono"></span>
+        </div>
       </div>
-    </section>
+    </div>
 
-    <!-- Full threshold config card -->
-    <section class="card" id="threshCard">
-      <div class="card-title">Sensor Thresholds</div>
-      <div class="thresh-tabs">
-        <div class="thresh-tab active" id="tabDist" onclick="switchThreshTab('dist')">Distillation</div>
-        <div class="thresh-tab"        id="tabRect" onclick="switchThreshTab('rect')">Rectification</div>
+    <div id="screen-0" class="screen">
+      <div class="grid grid-cols-2 gap-6">
+        <div onclick="sendCommand('MODE:1')" class="card p-8 hover:border-orange-400 cursor-pointer transition-colors flex flex-col items-center justify-center text-center">
+          <div class="text-6xl mb-4">🥃</div>
+          <h2 id="mode-dist-title" class="text-3xl font-semibold text-orange-400">DISTILLATION</h2>
+          <p class="text-gray-400 mt-2">SSR1–3</p>
+        </div>
+        <div onclick="sendCommand('MODE:2')" class="card p-8 hover:border-orange-400 cursor-pointer transition-colors flex flex-col items-center justify-center text-center">
+          <div class="text-6xl mb-4">⚗️</div>
+          <h2 id="mode-rect-title" class="text-3xl font-semibold text-orange-400">RECTIFICATION</h2>
+          <p class="text-gray-400 mt-2">SSR4–5</p>
+        </div>
       </div>
-      <div id="threshBody"><!-- filled by buildThreshCard() --></div>
-      <button class="thresh-save" id="btnThreshSave">Save Thresholds</button>
-    </section>
+    </div>
+
+    <div id="screen-1" class="screen hidden">
+      <div class="card p-6">
+        <div class="flex justify-between items-baseline mb-6">
+          <h2 id="ctrl-title" class="text-xl font-semibold"></h2>
+          <div class="flex items-center gap-2">
+            <button onclick="showSensorMapper()" class="text-xs px-3 py-1.5 rounded-full border border-gray-500/60 text-gray-300 hover:bg-gray-700">
+              Sensors
+            </button>
+            <button onclick="showValveScreen()" class="text-xs px-3 py-1.5 rounded-full border border-orange-400/60 text-orange-300 hover:bg-orange-500/10">
+              Valves Control
+            </button>
+          </div>
+        </div>
+
+        <div class="bg-[#181818] rounded-2xl px-5 py-4 mb-4">
+          <div class="flex items-center gap-4">
+            <div id="power-label-control" class="text-sm font-medium text-orange-400 w-32">Power</div>
+            <input type="range" min="0" max="100" value="0" id="master-slider" class="flex-1 accent-orange-400">
+            <div class="w-14 text-right font-mono text-sm" id="master-pct">0%</div>
+          </div>
+          <p id="power-help-text" class="text-xs text-gray-500 mt-2 ml-32">All active SSRs receive this duty cycle simultaneously.</p>
+        </div>
+
+        <div class="mt-6 pt-5 border-t border-gray-700">
+          <div id="limits-danger-title" class="text-xs uppercase tracking-widest mb-3 text-gray-400">Sensor Max Thresholds Danger</div>
+          <div id="limits-container" class="space-y-2 text-sm"></div>
+        </div>
+
+        <div class="flex gap-3 mt-6 pt-4 border-t border-gray-700">
+          <button onclick="sendCommand('MODE:0')" id="btn-back" class="flex-1 py-3 bg-red-600 hover:bg-red-500 rounded-2xl text-white font-medium">BACK</button>
+          <button onclick="sendCommand('START')" id="btn-start" class="flex-1 py-3 bg-green-600 hover:bg-green-500 rounded-2xl text-white font-medium disabled:opacity-40 disabled:cursor-not-allowed">START</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="screen-2" class="screen hidden">
+      <div class="card p-6">
+        <div id="mon-sensors" class="grid grid-cols-2 gap-x-8 gap-y-3 mb-5 text-lg"></div>
+
+        <div class="bg-[#181818] rounded-2xl px-5 py-4 mb-4">
+          <div class="flex items-center gap-4">
+            <div id="power-label-monitor" class="text-sm font-medium text-orange-400 w-32">Power</div>
+            <input type="range" min="0" max="100" value="0" id="mon-load-slider" class="flex-1 accent-orange-400">
+            <div class="w-14 text-right font-mono text-sm" id="mon-load-pct">0%</div>
+          </div>
+        </div>
+
+        <button onclick="sendCommand('STOP')" id="btn-stop" class="w-full py-4 bg-red-600 hover:bg-red-500 rounded-2xl text-white font-medium">STOP</button>
+      </div>
+    </div>
+
+    <div id="screen-3" class="screen hidden">
+      <div class="card p-6">
+        <div class="flex justify-between items-baseline mb-5">
+          <h2 id="valves-title" class="text-xl font-semibold">Valves Control</h2>
+          <button onclick="backFromValveScreen()" class="text-xs px-3 py-1.5 rounded-full border border-gray-500 text-gray-300 hover:bg-gray-700">BACK</button>
+        </div>
+        <div id="valve-rules-container" class="space-y-3"></div>
+      </div>
+    </div>
+
+    <div id="wifi-modal" class="hidden fixed inset-0 bg-black/80 flex items-center justify-center z-50">
+      <div class="bg-[#202020] border border-[#333] rounded-3xl p-8 w-full max-w-md mx-4">
+        <h2 id="wifi-title" class="text-2xl font-semibold mb-6 text-orange-400">WiFi Setup</h2>
+        <div class="space-y-6">
+          <div>
+            <label id="wifi-ssid-label" class="block text-gray-400 text-sm mb-2">SSID</label>
+            <input id="wifi-ssid" type="text" class="w-full bg-[#181818] border border-[#333] rounded-2xl px-5 py-4 text-white focus:outline-none focus:border-orange-400">
+          </div>
+          <div>
+            <label id="wifi-pass-label" class="block text-gray-400 text-sm mb-2">PASS</label>
+            <input id="wifi-pass" type="password" class="w-full bg-[#181818] border border-[#333] rounded-2xl px-5 py-4 text-white focus:outline-none focus:border-orange-400">
+          </div>
+          <div class="flex gap-4 mt-10">
+            <button onclick="hideWifiModal()" id="btn-cancel" class="flex-1 py-4 bg-gray-700 hover:bg-gray-600 rounded-2xl font-medium">Cancel</button>
+            <button onclick="saveWifiConfig()" id="btn-save" class="flex-1 py-4 bg-orange-500 hover:bg-orange-400 rounded-2xl font-medium text:white">SAVE</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div id="sensor-mapper-modal" class="hidden fixed inset-0 bg-black/80 flex items-center justify-center z-50">
+      <div class="bg-[#202020] border border-[#333] rounded-3xl p-6 w-full max-w-2xl mx-4 max-h-[90vh] flex flex-col">
+        <div class="flex items-center justify-between mb-4">
+          <h2 class="text-xl font-semibold text-orange-400">Sensor Mapping</h2>
+          <button onclick="hideSensorMapper()" class="text-xs px-3 py-1.5 rounded-full border border-gray-500 text-gray-300 hover:bg-gray-700">CLOSE</button>
+        </div>
+        <div class="flex items-center gap-3 mb-4">
+          <button onclick="scanSensorBus()" id="btn-scan" class="px-4 py-2 bg-orange-500 hover:bg-orange-400 rounded-xl text-sm font-medium text-white">SCAN BUS</button>
+          <span id="scan-status" class="text-sm text-gray-400"></span>
+        </div>
+        <div id="sensor-mapper-rows" class="overflow-y-auto space-y-2 flex-1"></div>
+      </div>
+    </div>
   </div>
 
-  <!-- MONITOR SCREEN -->
-  <div id="screen-monitor" style="display:none;">
-    <section class="card">
-      <div class="card-title" id="monitorTitle">TITLE_MONITOR_PLACEHOLDER</div>
+  <script>
+    let currentState = null;
+    const REFRESH_MS = 600;
 
-      <div class="row">
-        <span class="label" id="lblT1">SENSOR1_NAME_PLACEHOLDER</span>
-        <span class="value" id="mT1">--</span>
-      </div>
-      <div class="row">
-        <span class="label" id="lblT2">SENSOR2_NAME_PLACEHOLDER</span>
-        <span class="value" id="mT2">--</span>
-      </div>
-      <div class="row">
-        <span class="label" id="lblT3">SENSOR3_NAME_PLACEHOLDER</span>
-        <span class="value" id="mT3">--</span>
-      </div>
-      <div class="row">
-        <span class="label" id="lblP">MON_PRESSURE_PLACEHOLDER</span>
-        <span class="value" id="mP">--</span>
-      </div>
-      <div class="row">
-        <span class="label" id="lblLevel">MON_LEVEL_PLACEHOLDER</span>
-        <span class="value" id="mLevel">--</span>
-      </div>
-      <div class="row">
-        <span class="label" id="lblFlow">MON_FLOW_PLACEHOLDER</span>
-        <span class="value" id="mFlow">--</span>
-      </div>
-      <div class="row">
-        <span class="label" id="lblTotal">MON_TOTAL_PLACEHOLDER</span>
-        <span class="value" id="mTotal">--</span>
-      </div>
-      <div class="row">
-        <span class="label" id="lblSSRs">MON_SSRS_PLACEHOLDER</span>
-        <span class="value" id="mSSR">--</span>
-      </div>
+    // Optimistic master-power locking.
+    // When the user drags a slider, we freeze both sliders at the local value
+    // so polls don't snap them back. The lock clears as soon as the server
+    // confirms the new value, or after a 3-second safety timeout.
+    let mPwrPending    = false;   // true while user interaction is unconfirmed
+    let mPwrPendingVal = 0;       // value the user set
+    let mPwrTimer      = null;    // fallback release timer
 
-      <button class="btn btn-stop" id="btnStop">BTN_STOP_PLACEHOLDER</button>
-    </section>
-  </div>
-</div>
+    // Map backend ValveOp numeric values to command strings and display symbols.
+    // Numeric values must match the ValveOp enum in state.h.
+    const OP_CMD  = { 0:'NONE', 1:'GT', 2:'LT', 3:'GTE', 4:'LTE', 5:'EQ' };
+    const OP_SYM  = { 'NONE':'--', 'GT':'>', 'LT':'<', 'GTE':'≥', 'LTE':'≤', 'EQ':'=' };
 
-<script>
-(function(){
-  var STR = {
-    BTN_BACK:        "BTN_BACK_PLACEHOLDER",
-    BTN_SAVE:        "BTN_SAVE_PLACEHOLDER",
-    BTN_START:       "BTN_START_PLACEHOLDER",
-    BTN_STOP:        "BTN_STOP_PLACEHOLDER",
-    STATUS_RUNNING:  "STATUS_RUNNING_PLACEHOLDER",
-    STATUS_STOPPED:  "STATUS_STOPPED_PLACEHOLDER",
-    STATUS_SAFETY:   "STATUS_SAFETY_PLACEHOLDER",
-    TITLE_MODE_SEL:  "TITLE_MODE_SEL_PLACEHOLDER",
-    TITLE_MONITOR:   "TITLE_MONITOR_PLACEHOLDER",
-    TITLE_CTRL_DIST: "TITLE_CTRL_DIST_PLACEHOLDER",
-    TITLE_CTRL_RECT: "TITLE_CTRL_RECT_PLACEHOLDER",
-    PROC_DIST:       "PROC_DIST_PLACEHOLDER",
-    PROC_RECT:       "PROC_RECT_PLACEHOLDER",
-    SENSOR1_NAME:    "SENSOR1_NAME_PLACEHOLDER",
-    SENSOR2_NAME:    "SENSOR2_NAME_PLACEHOLDER",
-    SENSOR3_NAME:    "SENSOR3_NAME_PLACEHOLDER",
-    MON_PRESSURE:    "MON_PRESSURE_PLACEHOLDER",
-    MON_LEVEL:       "MON_LEVEL_PLACEHOLDER",
-    MON_FLOW:        "MON_FLOW_PLACEHOLDER",
-    MON_TOTAL:       "MON_TOTAL_PLACEHOLDER",
-    MON_SSRS:        "MON_SSRS_PLACEHOLDER",
-    LEVEL_OK:        "LEVEL_OK_PLACEHOLDER",
-    LEVEL_LOW:       "LEVEL_LOW_PLACEHOLDER",
-    OFFLINE:         "OFFLINE_PLACEHOLDER",
-    UNIT_DEGC:       "UNIT_DEGC_PLACEHOLDER",
-    APP_SUBTITLE:    "APP_SUBTITLE_PLACEHOLDER"
-  };
-
-  var lastModeForSSR   = null;
-  var activeTmaxSensor = 1;  // 1-based, mirrors s_activeTmaxSensor in LVGL
-
-  function $(id){ return document.getElementById(id); }
-
-  function showScreen(id){
-    ["screen-mode","screen-control","screen-monitor"].forEach(function(s){
-      var el = $(s);
-      if (el) el.style.display = (s === id) ? "block" : "none";
-    });
-  }
-
-  function send(cmd){
-    return fetch("/", {
-      method:"POST",
-      headers:{"Content-Type":"text/plain"},
-      body:cmd
-    });
-  }
-
-  function formatTemp(v){
-    var t = Number(v);
-    if (isNaN(t) || t <= -120) return STR.OFFLINE;
-    return t.toFixed(1) + STR.UNIT_DEGC;
-  }
-
-  function setValColor(id, isOffline){
-    var el = $(id);
-    if (el) el.style.color = isOffline ? "#e02424" : "";
-  }
-
-  // 3-color threshold coloring matching LVGL setThreshLabel
-  function setThreshColor(id, val, warn, danger){
-    var el = $(id);
-    if (!el) return;
-    if (val === null || val <= -120 || val <= -900) {
-      el.style.color = "#e02424";
-    } else if (val >= danger) {
-      el.style.color = "#e02424";
-    } else if (val >= warn) {
-      el.style.color = "#ff7a1a";
-    } else {
-      el.style.color = "#65ff7a";
-    }
-  }
-
-  // ---------------------------------------------------------------------------
-  // Sensor limit buttons (mirrors the 3-button tmax row on LVGL Control panel)
-  // ---------------------------------------------------------------------------
-  function buildLimitButtons(state){
-    var container = $("limitsBtns");
-    if (!container) return;
-
-    var pm  = state.processMode || 0;
-    var thr = (pm === 2) ? state.threshRect : state.threshDist;
-    var names = [STR.SENSOR1_NAME, STR.SENSOR2_NAME, STR.SENSOR3_NAME];
-
-    container.innerHTML = "";
-    for (var i = 0; i < 3; i++){
-      var val = (thr && thr.tempDanger && thr.tempDanger[i] != null)
-                  ? thr.tempDanger[i].toFixed(1) : "--";
-      var btn = document.createElement("button");
-      btn.className = "limit-sensor-btn";
-      btn.id        = "limitBtn" + (i + 1);
-      btn.title     = names[i] + " danger threshold";
-      btn.textContent = names[i] + ": " + val + (val !== "--" ? STR.UNIT_DEGC : "");
-      (function(sensor, initVal){
-        btn.onclick = function(){ openTmaxEditor(sensor, parseFloat(initVal)); };
-      })(i + 1, val);
-      container.appendChild(btn);
-    }
-  }
-
-  // ---------------------------------------------------------------------------
-  // Tmax inline editor (mirrors LVGL buildTmaxPanel)
-  // ---------------------------------------------------------------------------
-  function openTmaxEditor(sensor, initVal){
-    activeTmaxSensor = sensor;
-
-    // Highlight active button
-    for (var i = 1; i <= 3; i++){
-      var b = $("limitBtn" + i);
-      if (b) b.classList.toggle("active", i === sensor);
+    function str(key, fallback = '') {
+      return currentState && currentState[key] ? currentState[key] : fallback;
     }
 
-    var input = $("tmaxInput");
-    if (input) input.value = isNaN(initVal) ? "" : initVal.toFixed(1);
-
-    $("tmaxEditor").style.display  = "block";
-    $("ctrlActions").style.display = "none";   // hide Back/Start while editing
-  }
-
-  function closeTmaxEditor(){
-    $("tmaxEditor").style.display  = "none";
-    $("ctrlActions").style.display = "flex";
-
-    // Clear active highlight
-    for (var i = 1; i <= 3; i++){
-      var b = $("limitBtn" + i);
-      if (b) b.classList.remove("active");
+    function tempOfflineThresh() {
+      return currentState?.tempOfflineThresh ?? -900;
     }
-  }
 
-  // ---------------------------------------------------------------------------
-  // SSR control rows
-  // ---------------------------------------------------------------------------
-  function buildSsrControls(state){
-    var c  = $("ssrControls");
-    if (!c) return;
-    var pm = state.processMode || 0;
-    var ssrs = pm === 1 ? [1,2,3] : pm === 2 ? [4,5] : [];
+    function pressureOfflineThresh() {
+      return currentState?.pressureOfflineThresh ?? -900;
+    }
 
-    if (pm !== lastModeForSSR){
-      lastModeForSSR = pm;
-      c.innerHTML = "";
-      if (!ssrs.length) return;
+    function flowOfflineThresh() {
+      return currentState?.flowOfflineThresh ?? -900;
+    }
 
-      ssrs.forEach(function(i){
-        var idx   = i - 1;
-        var power = (state.ssrPower && state.ssrPower[idx]) || 0;
-        var on    = (state.ssrOn    && state.ssrOn[idx])    || false;
+    // Look up a sensor label from the ruleSensors catalog by its RuleSensorId.
+    // Used for non-DS18B20 sensors (flow, pressure, level) whose labels are not
+    // in the sensorNameN series.  Falls back to the provided string so the UI
+    // degrades gracefully before the first /state fetch.
+    // Future sensors become available automatically once enabled in g_ruleSensors
+    // on the device — no JS change required.
+    function ruleLabel(id, fallback) {
+      const s = currentState?.ruleSensors?.find(s => s.id === id);
+      return (s && s.label) ? s.label : fallback;
+    }
 
-        var row = document.createElement("div");
-        row.className = "ssr-row";
+    function sendCommand(cmd) {
+      const form = new FormData();
+      form.append('plain', cmd);
+      fetch('/', { method: 'POST', body: form })
+        .then(() => setTimeout(fetchState, 250))
+        .catch(err => console.error('Command error:', err));
+    }
 
-        var label = document.createElement("div");
-        label.className = "ssr-label";
-        label.textContent = "SSR" + i;
-        row.appendChild(label);
+    async function fetchState() {
+      try {
+        const res = await fetch('/state');
+        currentState = await res.json();
+        renderAll();
+      } catch (e) {
+        console.error('State fetch failed:', e);
+      }
+    }
 
-        var sliderWrap = document.createElement("div");
-        sliderWrap.className = "ssr-slider";
-        var slider = document.createElement("input");
-        slider.type  = "range";
-        slider.min   = "0";
-        slider.max   = "100";
-        slider.value = power;
-        slider.setAttribute("data-ssr", String(i));
-        sliderWrap.appendChild(slider);
-        row.appendChild(sliderWrap);
+    function releaseMPwrLock() {
+      mPwrPending = false;
+      clearTimeout(mPwrTimer);
+      mPwrTimer = null;
+    }
 
-        var pct = document.createElement("div");
-        pct.className = "ssr-percentage";
-        pct.setAttribute("data-ssr-pct", String(i));
-        pct.textContent = power.toFixed(0) + "%";
-        row.appendChild(pct);
+    function onMasterSliderChange(value) {
+      mPwrPendingVal = parseInt(value, 10);
+      mPwrPending    = true;
+      clearTimeout(mPwrTimer);
+      // Sync the OTHER slider immediately so both stay in visual agreement
+      const ctrlSlider = document.getElementById('master-slider');
+      const ctrlPct    = document.getElementById('master-pct');
+      const monSlider  = document.getElementById('mon-load-slider');
+      const monPct     = document.getElementById('mon-load-pct');
+      if (ctrlSlider) ctrlSlider.value   = mPwrPendingVal;
+      if (ctrlPct)   ctrlPct.textContent = mPwrPendingVal + '%';
+      if (monSlider) monSlider.value     = mPwrPendingVal;
+      if (monPct)   monPct.textContent   = mPwrPendingVal + '%';
+    }
 
-        var sw = document.createElement("label");
-        sw.className = "switch";
-        var chk = document.createElement("input");
-        chk.type = "checkbox";
-        chk.setAttribute("data-ssr-on", String(i));
-        if (on) chk.checked = true;
-        var span = document.createElement("span");
-        span.className = "slider-switch";
-        sw.appendChild(chk);
-        sw.appendChild(span);
+    function setupMasterSlider() {
+      const slider = document.getElementById('master-slider');
+      const pct    = document.getElementById('master-pct');
+      if (!slider) return;
+      // oninput: visual update + lock while dragging
+      slider.oninput = () => {
+        pct.textContent = slider.value + '%';
+        mPwrPendingVal  = parseInt(slider.value, 10);
+        mPwrPending     = true;
+        clearTimeout(mPwrTimer);
+      };
+      // onchange: fires on release — send command and arm 3s fallback timer
+      slider.onchange = () => {
+        onMasterSliderChange(slider.value);
+        sendCommand('MASTER:' + slider.value);
+        mPwrTimer = setTimeout(releaseMPwrLock, 3000);
+      };
+    }
 
-        var toggleWrap = document.createElement("div");
-        toggleWrap.className = "ssr-toggle";
-        toggleWrap.appendChild(sw);
-        row.appendChild(toggleWrap);
+    function setupMonSlider() {
+      const slider = document.getElementById('mon-load-slider');
+      const pct    = document.getElementById('mon-load-pct');
+      if (!slider) return;
+      slider.oninput = () => {
+        pct.textContent = slider.value + '%';
+        mPwrPendingVal  = parseInt(slider.value, 10);
+        mPwrPending     = true;
+        clearTimeout(mPwrTimer);
+      };
+      slider.onchange = () => {
+        onMasterSliderChange(slider.value);
+        sendCommand('MASTER:' + slider.value);
+        mPwrTimer = setTimeout(releaseMPwrLock, 3000);
+      };
+    }
 
-        c.appendChild(row);
+    function applySharedStrings() {
+      if (!currentState) return;
+      document.getElementById('app-title').textContent = str('appTitle', 'Cask & Crown');
+      document.getElementById('app-subtitle').textContent = str('appSubtitle', 'Winery Controller');
+      document.getElementById('mode-dist-title').textContent = str('procDist', 'DISTILLATION');
+      document.getElementById('mode-rect-title').textContent = str('procRect', 'RECTIFICATION');
+      document.getElementById('power-label-control').textContent = str('powerLabel', 'Power');
+      document.getElementById('power-label-monitor').textContent = str('powerLabel', 'Power');
+      document.getElementById('power-help-text').textContent = str('powerHelpText', 'All active SSRs receive this duty cycle simultaneously.');
+      document.getElementById('limits-danger-title').textContent = str('limitsDangerTitle', 'Sensor Max Thresholds Danger');
+      document.getElementById('valves-title').textContent = str('titleValves', 'Valves Control');
+      document.getElementById('btn-start').textContent = str('btnStart', 'START');
+      document.getElementById('btn-stop').textContent = str('btnStop', 'STOP');
+      document.getElementById('btn-back').textContent = str('btnBack', 'BACK');
+      document.getElementById('btn-save').textContent = str('btnSave', 'SAVE');
+      document.getElementById('btn-cancel').textContent = str('btnCancel', 'Cancel');
+      document.getElementById('wifi-title').textContent = str('titleWifiSetup', 'WiFi Setup');
+      document.getElementById('wifi-ssid-label').textContent = str('wifiSsidLabel', 'SSID');
+      document.getElementById('wifi-pass-label').textContent = str('wifiPassLabel', 'PASS');
+    }
+
+    function showWifiModal() {
+      const ssid = currentState?.ssid || '';
+      document.getElementById('wifi-ssid').value = ssid;
+      document.getElementById('wifi-pass').value = '';
+      document.getElementById('wifi-modal').classList.remove('hidden');
+    }
+
+    function hideWifiModal() {
+      document.getElementById('wifi-modal').classList.add('hidden');
+    }
+
+    function saveWifiConfig() {
+      const ssid = document.getElementById('wifi-ssid').value.trim();
+      const pass = document.getElementById('wifi-pass').value.trim();
+      if (!ssid) {
+        alert(str('wifiEmptySsid', 'SSID cannot be empty'));
+        return;
+      }
+      sendCommand(`WIFI:SET:${encodeURIComponent(ssid)}:${encodeURIComponent(pass)}`);
+      hideWifiModal();
+      setTimeout(() => alert(str('wifiSavedMsg', 'WiFi settings saved! Device is reconnecting...')), 400);
+    }
+
+    function showValveScreen() {
+      document.getElementById('screen-0').classList.add('hidden');
+      document.getElementById('screen-1').classList.add('hidden');
+      document.getElementById('screen-2').classList.add('hidden');
+      document.getElementById('screen-3').classList.remove('hidden');
+      renderValveScreen();
+    }
+
+    function backFromValveScreen() {
+      if (!currentState) {
+        document.getElementById('screen-3').classList.add('hidden');
+        document.getElementById('screen-0').classList.remove('hidden');
+        return;
+      }
+      const pm = currentState.processMode || 0;
+      const running = !!currentState.isRunning;
+      document.getElementById('screen-3').classList.add('hidden');
+      if (pm === 0) document.getElementById('screen-0').classList.remove('hidden');
+      else if (!running) document.getElementById('screen-1').classList.remove('hidden');
+      else document.getElementById('screen-2').classList.remove('hidden');
+    }
+
+    function buildSensorOptions(selectedId) {
+      if (!currentState?.ruleSensors) return '<option value="0">--</option>';
+      let h = '<option value="0">--</option>';
+      for (const s of currentState.ruleSensors) {
+        if (!s.enabled) continue;
+        const sel = s.id === selectedId ? ' selected' : '';
+        const u = s.unit ? ` (${s.unit})` : '';
+        h += `<option value="${s.id}"${sel}>${s.label}${u}</option>`;
+      }
+      return h;
+    }
+
+    function buildOpOptions(selectedOpNum) {
+      const sel = OP_CMD[selectedOpNum] || 'NONE';
+      return ['NONE','GT','LT','GTE','LTE','EQ'].map(op =>
+        `<option value="${op}"${op === sel ? ' selected' : ''}>${OP_SYM[op]}</option>`
+      ).join('');
+    }
+
+    function renderValveScreen() {
+      if (!currentState) return;
+      const container = document.getElementById('valve-rules-container');
+      if (!container) return;
+      const names = currentState.valveNames || Array.from({length: 5}, (_, i) => `Valve ${i + 1}`);
+      const rules = currentState.valveRules || [];
+      const opens = currentState.valveOpen  || [];
+
+      const condRow = (i, type, cond) => `
+        <div class="flex items-center gap-2 flex-wrap">
+          <span class="text-gray-400 w-24 shrink-0 text-xs">${type === 'open' ? 'Open when' : 'Close when'}:</span>
+          <select id="v${i}-${type}-sensor"
+            class="bg-[#111] border border-[#333] rounded-xl px-2 py-1.5 text-xs text-gray-100 focus:outline-none focus:border-orange-400">
+            ${buildSensorOptions(cond.sensorId)}
+          </select>
+          <select id="v${i}-${type}-op"
+            class="bg-[#111] border border-[#333] rounded-xl px-2 py-1.5 text-xs text-gray-100 w-14 focus:outline-none focus:border-orange-400">
+            ${buildOpOptions(cond.op)}
+          </select>
+          <input type="number" step="0.1" id="v${i}-${type}-val"
+            class="bg-[#111] border border-[#333] rounded-xl px-2 py-1.5 text-xs text-gray-100 w-20 focus:outline-none focus:border-orange-400"
+            value="${cond.value.toFixed(1)}">
+          <button onclick="applyValveCondition(${i},'${type}')"
+            class="px-3 py-1.5 bg-orange-500 hover:bg-orange-400 rounded-xl text-xs font-medium text-white">SET</button>
+        </div>`;
+
+      container.innerHTML = names.map((name, i) => {
+        const rule = rules[i] || { openWhen: {sensorId:0, op:0, value:0}, closeWhen: {sensorId:0, op:0, value:0} };
+        const isOpen = opens[i] || false;
+        const badgeCls = isOpen
+          ? 'px-2 py-0.5 text-xs bg-green-600 text-white rounded-full font-medium'
+          : 'px-2 py-0.5 text-xs bg-gray-600 text-white rounded-full font-medium';
+        const badge = `<span id="v${i}-badge" class="${badgeCls}">${isOpen ? 'OPEN' : 'CLOSED'}</span>`;
+        return `
+          <div class="bg-[#181818] rounded-2xl px-5 py-4 space-y-3">
+            <div class="flex items-center justify-between">
+              <span class="font-medium text-gray-100">${name}</span>
+              ${badge}
+            </div>
+            ${condRow(i, 'open',  rule.openWhen)}
+            ${condRow(i, 'close', rule.closeWhen)}
+          </div>`;
+      }).join('');
+    }
+
+    function applyValveCondition(valveIdx, type) {
+      const sensorId = parseInt(document.getElementById(`v${valveIdx}-${type}-sensor`).value, 10);
+      const op       = document.getElementById(`v${valveIdx}-${type}-op`).value;
+      const val      = parseFloat(document.getElementById(`v${valveIdx}-${type}-val`).value);
+      if (isNaN(val)) { alert('Invalid threshold value'); return; }
+      const cmdType = type === 'open' ? 'OPENCFG' : 'CLOSECFG';
+      sendCommand(`VALVE:${valveIdx}:${cmdType}:${sensorId}:${op}:${val.toFixed(2)}`);
+    }
+
+    // Lightweight badge-only update – called on every poll when screen-3 is visible.
+    // Updates only the OPEN/CLOSED spans by stable ID, leaving all form controls intact.
+    function updateValveBadges() {
+      if (!currentState) return;
+      const opens = currentState.valveOpen || [];
+      opens.forEach((isOpen, i) => {
+        const el = document.getElementById(`v${i}-badge`);
+        if (!el) return;
+        el.textContent = isOpen ? 'OPEN' : 'CLOSED';
+        el.className = isOpen
+          ? 'px-2 py-0.5 text-xs bg-green-600 text-white rounded-full font-medium'
+          : 'px-2 py-0.5 text-xs bg-gray-600 text-white rounded-full font-medium';
+      });
+    }
+
+    function renderLimits() {
+      const container = document.getElementById('limits-container');
+      if (!container || !currentState) return;
+      container.innerHTML = '';
+      const pm = currentState.processMode || 0;
+      if (pm === 0) return;
+
+      const thr = pm === 2 ? currentState.threshRect : currentState.threshDist;
+      const addRow = (label, value, unit, onClick) => {
+        const row = document.createElement('div');
+        row.className = 'flex justify-between items-center bg-[#181818] rounded-2xl px-5 py-3 cursor-pointer hover:bg-[#222]';
+        row.innerHTML = `<span class="text-gray-300">${label}</span><span class="font-medium text-orange-400">${value}${unit}</span>`;
+        row.onclick = onClick;
+        container.appendChild(row);
+      };
+
+      addRow(currentState.smaxLabel1 || str('labelPressure', 'Pressure'), thr.pressDanger.toFixed(2), ` ${str('unitBar', 'bar')}`, () => {
+        const label = currentState.smaxLabel1 || str('labelPressure', 'Pressure');
+        const newVal = prompt(`New ${label} danger threshold (${str('unitBar', 'bar')}):`, thr.pressDanger.toFixed(2));
+        if (newVal === null) return;
+        const num = parseFloat(newVal);
+        if (isNaN(num) || num < 0 || num > 3) {
+          alert(str('promptEnter03Bar', 'Enter 0-3 bar'));
+          return;
+        }
+        const isRect = pm === 2;
+        sendCommand((isRect ? 'THRESH:R:PD:' : 'THRESH:D:PD:') + num.toFixed(2));
       });
 
-      Array.prototype.forEach.call(
-        c.querySelectorAll('input[type="range"]'),
-        function(sl){
-          sl.addEventListener("input", function(e){
-            var ssr   = e.target.getAttribute("data-ssr");
-            var val   = Number(e.target.value) || 0;
-            var pctEl = c.querySelector('[data-ssr-pct="' + ssr + '"]');
-            if (pctEl) pctEl.textContent = val.toFixed(0) + "%";
-          });
-          sl.addEventListener("change", function(e){
-            send("SSR:" + e.target.getAttribute("data-ssr") + ":PWR:" + e.target.value);
-          });
-        }
-      );
-
-      Array.prototype.forEach.call(
-        c.querySelectorAll('input[data-ssr-on]'),
-        function(chk){
-          chk.addEventListener("change", function(e){
-            var ssr = e.target.getAttribute("data-ssr-on");
-            send("SSR:" + ssr + ":" + (e.target.checked ? "ON" : "OFF"));
-          });
-        }
-      );
+      addRow(currentState.smaxLabel2 || str('sensorName2', 'Kettle'),  thr.tempDanger[1].toFixed(1), str('unitDegC', '°C'), () => editThreshold(2, thr.tempDanger[1], currentState.smaxLabel2 || str('sensorName2', 'Kettle')));
+      addRow(currentState.smaxLabel3 || str('sensorName3', 'Pillar 1'), thr.tempDanger[2].toFixed(1), str('unitDegC', '°C'), () => editThreshold(3, thr.tempDanger[2], currentState.smaxLabel3 || str('sensorName3', 'Pillar 1')));
     }
 
-    // Sync slider / switch values each refresh
-    ssrs.forEach(function(i){
-      var idx   = i - 1;
-      var power = (state.ssrPower && state.ssrPower[idx]) || 0;
-      var on    = (state.ssrOn    && state.ssrOn[idx])    || false;
-
-      var rangeEl = c.querySelector('input[type="range"][data-ssr="' + i + '"]');
-      var pctEl   = c.querySelector('[data-ssr-pct="' + i + '"]');
-      var chkEl   = c.querySelector('input[data-ssr-on="' + i + '"]');
-
-      if (rangeEl) rangeEl.value       = power;
-      if (pctEl)   pctEl.textContent   = power.toFixed(0) + "%";
-      if (chkEl)   chkEl.checked       = !!on;
-    });
-  }
-
-  // ---------------------------------------------------------------------------
-  // Full threshold card (Warn + Danger for all sensors + pressure)
-  // ---------------------------------------------------------------------------
-  var threshTabActive = "dist";
-  var threshCache     = null;
-
-  function switchThreshTab(tab){
-    threshTabActive = tab;
-    $("tabDist").classList.toggle("active", tab === "dist");
-    $("tabRect").classList.toggle("active", tab === "rect");
-    if (threshCache) buildThreshCard(threshCache);
-  }
-
-  function buildThreshCard(state){
-    var body = $("threshBody");
-    if (!body) return;
-    var td = threshTabActive === "dist" ? state.threshDist : state.threshRect;
-    if (!td) return;
-
-    var sensorNames = [STR.SENSOR1_NAME, STR.SENSOR2_NAME, STR.SENSOR3_NAME];
-    var html = "";
-    for (var i = 0; i < 3; i++){
-      var tw  = (td.tempWarn   && td.tempWarn[i]   != null) ? td.tempWarn[i].toFixed(1)   : "";
-      var tdd = (td.tempDanger && td.tempDanger[i] != null) ? td.tempDanger[i].toFixed(1) : "";
-      html += '<div class="thresh-row">'
-            + '<div class="t-name">' + sensorNames[i] + '</div>'
-            + '<label>Warn \u00b0C</label>'
-            + '<input type="number" step="0.5" id="tw_' + threshTabActive + '_' + i + '" value="' + tw + '">'
-            + '<label>Danger \u00b0C</label>'
-            + '<input type="number" step="0.5" id="td_' + threshTabActive + '_' + i + '" value="' + tdd + '">'
-            + '</div>';
+    function editThreshold(sensor, currentVal, label) {
+      const newVal = prompt(`${str('promptNewDanger', 'New danger threshold for')} ${label} (${str('unitDegC', '°C')}):`, currentVal.toFixed(1));
+      if (newVal === null) return;
+      const num = parseFloat(newVal);
+      if (isNaN(num) || num < 0 || num > 200) {
+        alert(str('promptEnter0200', 'Enter 0-200'));
+        return;
+      }
+      sendCommand(`TMAX:${sensor}:SET:${num.toFixed(1)}`);
     }
-    var pw = (td.pressWarn   != null) ? td.pressWarn.toFixed(3)   : "";
-    var pd = (td.pressDanger != null) ? td.pressDanger.toFixed(3) : "";
-    html += '<div class="thresh-row">'
-          + '<div class="t-name">Pressure</div>'
-          + '<label>Warn bar</label>'
-          + '<input type="number" step="0.001" id="pw_' + threshTabActive + '" value="' + pw + '">'
-          + '<label>Danger bar</label>'
-          + '<input type="number" step="0.001" id="pd_' + threshTabActive + '" value="' + pd + '">'
-          + '</div>';
-    body.innerHTML = html;
-  }
 
-  async function saveThresholds(){
-    // Use "D" / "R" to match handleCommand() THRESH parser (expects single char)
-    var proc = threshTabActive === "dist" ? "D" : "R";
-    var cmds = [];
-    for (var i = 0; i < 3; i++){
-      var wEl = $("tw_" + threshTabActive + "_" + i);
-      var dEl = $("td_" + threshTabActive + "_" + i);
-      if (wEl && wEl.value !== "") cmds.push("THRESH:" + proc + ":TW:" + i + ":" + wEl.value);
-      if (dEl && dEl.value !== "") cmds.push("THRESH:" + proc + ":TD:" + i + ":" + dEl.value);
-    }
-    var pwEl = $("pw_" + threshTabActive);
-    var pdEl = $("pd_" + threshTabActive);
-    if (pwEl && pwEl.value !== "") cmds.push("THRESH:" + proc + ":PW:" + pwEl.value);
-    if (pdEl && pdEl.value !== "") cmds.push("THRESH:" + proc + ":PD:" + pdEl.value);
+    function renderMonitorValues() {
+      if (!currentState) return;
+      const thr    = currentState.processMode === 2 ? currentState.threshRect : currentState.threshDist;
+      const tempOff = tempOfflineThresh();
+      const pressOff = pressureOfflineThresh();
+      const flowOff  = flowOfflineThresh();
+      const unitDegC = str('unitDegC', '°C');
+      const unitBar  = str('unitBar', 'bar');
+      const unitLpm  = str('unitLpm', 'L/min');
+      const unitL    = str('unitLiters', 'L');
+      const offline  = str('labelOffline', 'Offline');
 
-    for (var c = 0; c < cmds.length; c++) await send(cmds[c]);
-    await fetchState();
-  }
+      // Build a sensor row HTML string.
+      // cls: colour class applied to the value span.
+      const row = (label, valHtml, cls = '') =>
+        `<div class="flex justify-between items-center">
+           <span class="text-gray-400">${label}</span>
+           <span class="${cls}">${valHtml}</span>
+         </div>`;
 
-  // ---------------------------------------------------------------------------
-  // Main state fetch & UI update
-  // ---------------------------------------------------------------------------
-  async function fetchState(){
-    try{
-      var r = await fetch("/state", {cache:"no-store"});
-      if (!r.ok) return;
-      var s = await r.json();
+      // Temperature row helper – returns '' (hidden) for extended sensors that are offline.
+      const tempRow = (label, val, warn, danger, alwaysShow) => {
+        if (val == null || isNaN(val) || val <= tempOff) {
+          if (!alwaysShow) return '';
+          return row(label, offline, 'sensor-offline');
+        }
+        const cls = val >= danger ? 'sensor-danger' : val >= warn ? 'sensor-warn' : '';
+        return row(label, `${val.toFixed(1)}${unitDegC}`, cls);
+      };
 
-      var statusEl = $("hdrStatus");
-      var line1El  = $("hdrLine1");
-      var line2El  = $("hdrLine2");
-      var line3El  = $("hdrLine3");
-      var subEl    = $("subtitle");
+      // Flow row helper – returns '' for extended sensors that are offline.
+      const flowRow = (label, val, alwaysShow) => {
+        if (val == null || isNaN(val) || val <= flowOff) {
+          if (!alwaysShow) return '';
+          return row(label, offline, 'sensor-offline');
+        }
+        return row(label, `${val.toFixed(2)} ${unitLpm}`);
+      };
 
-      var pm            = s.processMode || 0;
-      var running       = !!s.isRunning;
-      var safetyTripped = !!s.safetyTripped;
+      // -----------------------------------------------------------------------
+      // Collect all rows. The grid is 2-column so rows alternate left/right
+      // automatically via CSS grid auto-placement.
+      // -----------------------------------------------------------------------
+      const rows = [];
 
-      subEl.textContent = STR.APP_SUBTITLE + " FW " + (s.fw || "");
+      // Core temperature sensors – always shown (alwaysShow = true)
+      rows.push(tempRow(str('sensorName1', 'Room'),    currentState.roomTemp,    thr.tempWarn[0], thr.tempDanger[0], true));
+      rows.push(tempRow(str('sensorName2', 'Kettle'),  currentState.kettleTemp,  thr.tempWarn[1], thr.tempDanger[1], true));
+      rows.push(tempRow(str('sensorName3', 'Pillar 1'),currentState.pillar1Temp, thr.tempWarn[2], thr.tempDanger[2], true));
 
-      // Status
-      if (safetyTripped){
-        statusEl.textContent = STR.STATUS_SAFETY;
-        statusEl.style.color = "#e02424";
-      } else if (running){
-        statusEl.textContent = STR.STATUS_RUNNING;
-        statusEl.style.color = "#65ff7a";
+      // Extended temperature sensors – appear only when online
+      // thr.tempWarn/Danger for extended slots fall back to safetyTempMaxC (no per-sensor threshold configured)
+      const extTempOff  = currentState.safetyTempMaxC  || 95;
+      const extTempWarn = extTempOff * 0.92;   // 92% of limit as visual warn
+      rows.push(tempRow(str('sensorName4', 'Pillar 2'),     currentState.pillar2Temp,  extTempWarn, extTempOff, false));
+      rows.push(tempRow(str('sensorName5', 'Pillar 3'),     currentState.pillar3Temp,  extTempWarn, extTempOff, false));
+      rows.push(tempRow(str('sensorName6', 'Dephlegmator'), currentState.dephlegmTemp, extTempWarn, extTempOff, false));
+      rows.push(tempRow(str('sensorName7', 'Reflux Cond.'), currentState.refluxTemp,   extTempWarn, extTempOff, false));
+      rows.push(tempRow(str('sensorName8', 'Product Cooler'),currentState.productTemp, extTempWarn, extTempOff, false));
+
+      // Total volume – rendered in the header bar, not the sensor grid
+
+      // Pressure – always shown
+      if (currentState.pressureBar <= pressOff) {
+        rows.push(row(str('labelPressure', 'Pressure'), offline, 'sensor-offline'));
       } else {
-        statusEl.textContent = STR.STATUS_STOPPED;
-        statusEl.style.color = "#b3b3b3";
+        const pCls = currentState.pressureBar >= thr.pressDanger ? 'sensor-danger'
+                   : currentState.pressureBar >= thr.pressWarn   ? 'sensor-warn' : '';
+        rows.push(row(str('labelPressure', 'Pressure'), `${currentState.pressureBar.toFixed(2)} ${unitBar}`, pCls));
       }
 
-      // Header T1 – matches LVGL hdr_t1 logic (green valid / red offline)
-      var t1Offline = !(typeof s.t1 === "number" && s.t1 > -120);
-      if (!t1Offline){
-        line1El.textContent = STR.SENSOR1_NAME + ": " + s.t1.toFixed(1) + STR.UNIT_DEGC;
-        line1El.style.color = "#65ff7a";
-      } else {
-        line1El.textContent = STR.SENSOR1_NAME + ": --";
-        line1El.style.color = "#e02424";
-      }
+      // Level – always shown
+      const lvlOk = currentState.levelHigh;
+      rows.push(row(str('labelLevel', 'Level'),
+        lvlOk ? str('labelLevelOk', 'Level OK') : str('labelLevelLow', 'Level LOW'),
+        lvlOk ? 'text-green-400' : 'text-red-400'));
 
-      // Header Max – highest current sensor reading (matches updated LVGL hdr_tmax)
-      if (safetyTripped && s.safetyMessage){
-        line2El.textContent = s.safetyMessage;
-        line2El.style.color = "#e02424";
-      } else {
-        var temps = [s.t1, s.t2, s.t3].filter(function(t){
-          return typeof t === "number" && t > -120;
-        });
-        if (temps.length === 0){
-          line2El.textContent = "Max: --";
-          line2El.style.color = "#b3b3b3";
-        } else {
-          var maxTemp = Math.max.apply(null, temps);
-          line2El.textContent = "Max: " + maxTemp.toFixed(1) + STR.UNIT_DEGC;
-          line2El.style.color = "#b3b3b3";
+      // Product flow – always shown
+      rows.push(flowRow(str('labelFlow', 'Flow'), currentState.flowRateLPM, true));
+
+      // Extended flow sensors – appear only when online.
+      // Labels come from the ruleSensors catalog (already in /state) so new
+      // sensors become visible automatically when enabled on the device.
+      // RuleSensorId: Water Dephl = 14, Water Cond = 15, Water Cooler = 16.
+      rows.push(flowRow(ruleLabel(14, 'Water Dephl.'), currentState.waterDephlLpm,  false));
+      rows.push(flowRow(ruleLabel(15, 'Water Cond.'),  currentState.waterCondLpm,   false));
+      rows.push(flowRow(ruleLabel(16, 'Water Cooler'), currentState.waterCoolerLpm, false));
+
+      // Render into the 2-column grid; empty strings are filtered out
+      const container = document.getElementById('mon-sensors');
+      if (container) container.innerHTML = rows.filter(r => r !== '').join('');
+
+      // Slider — only sync from server when no user interaction is pending
+      if (!mPwrPending) {
+        const monSlider = document.getElementById('mon-load-slider');
+        const monPct    = document.getElementById('mon-load-pct');
+        if (monSlider && monPct) {
+          const pwr = Math.round(currentState.masterPower || 0);
+          if (parseInt(monSlider.value, 10) !== pwr) monSlider.value = pwr;
+          monPct.textContent = pwr + '%';
         }
       }
-
-      // IP
-      line3El.textContent = "IP: " + (s.ip || "0.0.0.0");
-
-      // Mode button active state
-      $("btnModeDist").classList.toggle("active", pm === 1);
-      $("btnModeRect").classList.toggle("active", pm === 2);
-
-      // Cache for threshold card rebuilds and tab switches
-      threshCache = s;
-
-      // Active threshold set
-      var thr = (pm === 2) ? s.threshRect : s.threshDist;
-
-      // Monitor values
-      $("mT1").textContent = formatTemp(s.t1);
-      $("mT2").textContent = formatTemp(s.t2);
-      $("mT3").textContent = formatTemp(s.t3);
-      if (thr){
-        setThreshColor("mT1", Number(s.t1), thr.tempWarn[0], thr.tempDanger[0]);
-        setThreshColor("mT2", Number(s.t2), thr.tempWarn[1], thr.tempDanger[1]);
-        setThreshColor("mT3", Number(s.t3), thr.tempWarn[2], thr.tempDanger[2]);
-      } else {
-        setValColor("mT1", Number(s.t1) <= -120);
-        setValColor("mT2", Number(s.t2) <= -120);
-        setValColor("mT3", Number(s.t3) <= -120);
-      }
-
-      var p        = Number(s.pressureBar);
-      var pOffline = isNaN(p) || p <= -900.0;
-      $("mP").textContent = pOffline ? STR.OFFLINE : p.toFixed(3) + " bar";
-      if (thr && !pOffline) setThreshColor("mP", p, thr.pressWarn, thr.pressDanger);
-      else                  setValColor("mP", pOffline);
-
-      $("mLevel").textContent   = s.levelHigh ? STR.LEVEL_OK : STR.LEVEL_LOW;
-      $("mLevel").style.color   = s.levelHigh ? "#65ff7a" : "#e02424";
-
-      var f        = Number(s.flowRateLPM);
-      var fOffline = isNaN(f) || f <= -900.0;
-      $("mFlow").textContent = fOffline ? STR.OFFLINE : f.toFixed(2) + " L/min";
-      setValColor("mFlow", fOffline);
-
-      $("mTotal").textContent = (s.totalVolumeLiters || 0).toFixed(3) + " L";
-
-      // SSR pills
-      var onArr  = s.ssrOn    || [];
-      var pwrArr = s.ssrPower || [];
-      var relevant = pm === 1 ? [0,1,2] : pm === 2 ? [3,4] : [];
-      var ssrEl    = $("mSSR");
-      if (!relevant.length){
-        ssrEl.textContent = "--";
-      } else {
-        var html = "";
-        relevant.forEach(function(i){
-          var isOn  = !!onArr[i];
-          var pwr   = (pwrArr[i] || 0).toFixed(1);
-          var txt   = isOn ? ("SSR"+(i+1)+": ON "+pwr+"%") : ("SSR"+(i+1)+": OFF");
-          var cls   = isOn ? "ssr-pill on" : "ssr-pill off";
-          html += '<span class="' + cls + '">' + txt + '</span> ';
-        });
-        ssrEl.innerHTML = html;
-      }
-
-      // Start button enable
-      var btnStart = $("btnStart");
-      var canStart = (pm === 1 || pm === 2) && !running && !safetyTripped;
-      if (canStart){
-        var anySSR = false;
-        for (var i = 0; i < 5; i++){
-          if (onArr[i] && (pwrArr[i]||0) > 0){ anySSR = true; break; }
-        }
-        if (!anySSR) canStart = false;
-      }
-      btnStart.disabled = !canStart;
-
-      // Screen routing
-      if (!pm){
-        showScreen("screen-mode");
-      } else if (!running){
-        $("controlTitle").textContent = (pm === 1 ? STR.TITLE_CTRL_DIST : STR.TITLE_CTRL_RECT);
-        buildSsrControls(s);
-        buildLimitButtons(s);
-        buildThreshCard(s);
-        showScreen("screen-control");
-      } else {
-        showScreen("screen-monitor");
-      }
-    } catch(e){
-      console.error("fetchState", e);
     }
-  }
 
-  // ---------------------------------------------------------------------------
-  // Event bindings
-  // ---------------------------------------------------------------------------
-  function bindEvents(){
-    $("btnModeDist").onclick = async function(){
-      await send("MODE:1"); await fetchState();
-    };
-    $("btnModeRect").onclick = async function(){
-      await send("MODE:2"); await fetchState();
-    };
-    $("btnStart").onclick = async function(){
-      await send("START"); await fetchState();
-    };
-    $("btnBack").onclick = async function(){
-      await send("MODE:0");
-      lastModeForSSR = null;
-      await fetchState();
-    };
-    $("btnStop").onclick = async function(){
-      await send("STOP");
-      await send("MODE:0");
-      lastModeForSSR = null;
-      await fetchState();
-    };
+    function renderAll() {
+      if (!currentState) return;
 
-    // Tmax editor +/- buttons (adjust the input field only, no network call yet)
-    $("btnTmaxM5").onclick = function(){
-      var inp = $("tmaxInput");
-      if (inp) inp.value = (parseFloat(inp.value || 0) - 5).toFixed(1);
-    };
-    $("btnTmaxM1").onclick = function(){
-      var inp = $("tmaxInput");
-      if (inp) inp.value = (parseFloat(inp.value || 0) - 1).toFixed(1);
-    };
-    $("btnTmaxP1").onclick = function(){
-      var inp = $("tmaxInput");
-      if (inp) inp.value = (parseFloat(inp.value || 0) + 1).toFixed(1);
-    };
-    $("btnTmaxP5").onclick = function(){
-      var inp = $("tmaxInput");
-      if (inp) inp.value = (parseFloat(inp.value || 0) + 5).toFixed(1);
-    };
+      applySharedStrings();
 
-    // Tmax editor Back: discard, return to control
-    $("btnTmaxBack").onclick = function(){
-      closeTmaxEditor();
-    };
+      const st = document.getElementById('hdr-status');
+      if (currentState.safetyTripped) {
+        st.innerHTML = `<span class="px-3 py-1 bg-red-600 text-white text-xs rounded-full font-medium">${str('statusSafety', 'SAFETY TRIP')}</span>`;
+      } else if (currentState.isRunning) {
+        st.innerHTML = `<span class="px-3 py-1 bg-green-600 text-white text-xs rounded-full font-medium">${str('statusRunning', 'RUNNING')}</span>`;
+      } else {
+        st.innerHTML = `<span class="px-3 py-1 bg-gray-600 text-white text-xs rounded-full font-medium">${str('statusStopped', 'STOPPED')}</span>`;
+      }
 
-    // Tmax editor Save: send TMAX:N:SET:val matching updated handleCommand format
-    $("btnTmaxSave").onclick = async function(){
-      var inp = $("tmaxInput");
-      if (!inp) return;
-      var val = parseFloat(inp.value);
-      if (isNaN(val)) return;
-      await send("TMAX:" + activeTmaxSensor + ":SET:" + val.toFixed(1));
-      closeTmaxEditor();
-      await fetchState();
-    };
+      document.getElementById('hdr-t1').innerHTML =
+        currentState.roomTemp > tempOfflineThresh()
+          ? `${str('sensorName1', 'Room')} <span class="font-medium">${currentState.roomTemp.toFixed(1)}${str('unitDegC', '°C')}</span>`
+          : `${str('sensorName1', 'Room')} <span class="sensor-offline">${str('labelOffline', 'Offline')}</span>`;
 
-    // Header IP tap → mode 0 (mirrors LVGL cbIpClicked → uiShowWifiConfig)
-    $("hdrLine3").onclick = async function(){
-      await send("MODE:0");
-      lastModeForSSR = null;
-      await fetchState();
-    };
+      let maxTxt = `${str('maxPrefix', 'Max')} --`;
+      if (currentState.safetyTripped && currentState.safetyMessage) {
+        maxTxt = currentState.safetyMessage;
+      } else {
+        const allTemps = [
+          currentState.roomTemp, currentState.kettleTemp, currentState.pillar1Temp,
+          currentState.pillar2Temp, currentState.pillar3Temp,
+          currentState.dephlegmTemp, currentState.refluxTemp, currentState.productTemp
+        ].filter(v => v != null && v > tempOfflineThresh());
+        if (allTemps.length) maxTxt = `${str('maxPrefix', 'Max')} ${Math.max(...allTemps).toFixed(1)}${str('unitDegC', '°C')}`;
+      }
+      document.getElementById('hdr-max').textContent = maxTxt;
+      document.getElementById('hdr-ip').textContent = currentState.ip || '0.0.0.0';
+      document.getElementById('fw').textContent = currentState.fw || '1.0.0';
 
-    $("btnThreshSave").onclick = saveThresholds;
-  }
+      const totalVol = (currentState.totalVolumeLiters || 0).toFixed(3);
+      const hdrTotal = document.getElementById('hdr-total');
+      if (hdrTotal) {
+        hdrTotal.textContent = currentState.isRunning || currentState.totalVolumeLiters > 0
+          ? `${totalVol} ${str('unitLiters', 'L')}`
+          : '';
+      }
 
-  // ---------------------------------------------------------------------------
-  // Init
-  // ---------------------------------------------------------------------------
-  window.addEventListener("DOMContentLoaded", function(){
-    $("modeTitle").textContent    = STR.TITLE_MODE_SEL;
-    $("monitorTitle").textContent = STR.TITLE_MONITOR;
-    $("btnBack").textContent      = STR.BTN_BACK;
-    $("btnTmaxBack").textContent  = STR.BTN_BACK;
-    $("btnTmaxSave").textContent  = STR.BTN_SAVE;
-    $("btnStart").textContent     = STR.BTN_START;
-    $("btnStop").textContent      = STR.BTN_STOP;
-    $("btnModeDist").textContent  = STR.PROC_DIST;
-    $("btnModeRect").textContent  = STR.PROC_RECT;
-    $("lblT1").textContent        = STR.SENSOR1_NAME;
-    $("lblT2").textContent        = STR.SENSOR2_NAME;
-    $("lblT3").textContent        = STR.SENSOR3_NAME;
-    $("lblP").textContent         = STR.MON_PRESSURE;
-    $("lblLevel").textContent     = STR.MON_LEVEL;
-    $("lblFlow").textContent      = STR.MON_FLOW;
-    $("lblTotal").textContent     = STR.MON_TOTAL;
-    $("lblSSRs").textContent      = STR.MON_SSRS;
+      const title = document.getElementById('ctrl-title');
+      title.textContent = currentState.processMode === 1 ? str('titleCtrlDist', 'Distillation Control') : currentState.processMode === 2 ? str('titleCtrlRect', 'Rectification Control') : str('titleCtrl', 'Control');
 
-    bindEvents();
-    fetchState();
-    setInterval(fetchState, 3000);
-  });
-})();
-</script>
+      const srvPwr = Math.round(currentState.masterPower || 0);
+
+      // Release the pending lock early once the server confirms our value
+      if (mPwrPending && srvPwr === mPwrPendingVal) releaseMPwrLock();
+
+      // Only sync sliders from server when no user interaction is pending
+      if (!mPwrPending) {
+        const slider = document.getElementById('master-slider');
+        const pct    = document.getElementById('master-pct');
+        if (slider && parseInt(slider.value, 10) !== srvPwr) slider.value = srvPwr;
+        if (pct) pct.textContent = srvPwr + '%';
+      }
+
+      // ── Screen switching ──────────────────────────────────────────────────
+      // Done BEFORE renderMonitorValues/renderLimits so that a render error
+      // never prevents the correct screen from showing.
+      const modeScreen    = document.getElementById('screen-0');
+      const controlScreen = document.getElementById('screen-1');
+      const monitorScreen = document.getElementById('screen-2');
+      const valveScreen   = document.getElementById('screen-3');
+
+      if (!valveScreen.classList.contains('hidden')) {
+        updateValveBadges();
+        renderMonitorValues();   // keep monitor data fresh even when valve screen is open
+        return;
+      }
+
+      if (currentState.processMode === 0) {
+        modeScreen.classList.remove('hidden');
+        controlScreen.classList.add('hidden');
+        monitorScreen.classList.add('hidden');
+      } else if (!currentState.isRunning) {
+        modeScreen.classList.add('hidden');
+        controlScreen.classList.remove('hidden');
+        monitorScreen.classList.add('hidden');
+      } else {
+        modeScreen.classList.add('hidden');
+        controlScreen.classList.add('hidden');
+        monitorScreen.classList.remove('hidden');
+      }
+
+      // While a slider change is pending, use the local value so START can
+      // be enabled immediately without waiting for server confirmation.
+      const effectivePower = mPwrPending ? mPwrPendingVal : srvPwr;
+
+      const canStart =
+        (currentState.processMode === 1 || currentState.processMode === 2) &&
+        !currentState.isRunning &&
+        !currentState.safetyTripped &&
+        effectivePower > 0;
+
+      document.getElementById('btn-start').disabled = !canStart;
+
+      // ── Content rendering (after screen is correct) ───────────────────────
+      renderMonitorValues();
+      renderLimits();
+    }
+
+    // -----------------------------------------------------------------------
+    // Sensor Mapper
+    // -----------------------------------------------------------------------
+    let scannedRoms = [];   // array of ROM hex strings from last bus scan
+
+    function showSensorMapper() {
+      document.getElementById('sensor-mapper-modal').classList.remove('hidden');
+      renderSensorMapperRows();
+    }
+
+    function hideSensorMapper() {
+      document.getElementById('sensor-mapper-modal').classList.add('hidden');
+    }
+
+    async function scanSensorBus() {
+      const btn = document.getElementById('btn-scan');
+      const status = document.getElementById('scan-status');
+      btn.disabled = true;
+      status.textContent = 'Scanning...';
+      try {
+        const res = await fetch('/api/sensor_scan', { method: 'POST' });
+        const data = await res.json();
+        scannedRoms = data.roms || [];
+        status.textContent = `${data.count} device(s) found`;
+        renderSensorMapperRows();
+      } catch (e) {
+        status.textContent = 'Scan failed';
+        console.error('Scan error:', e);
+      }
+      btn.disabled = false;
+    }
+
+    function buildRomOptions(currentRom) {
+      // Current ROM is always shown first so the user can see what's assigned
+      // even if it wasn't found in the last scan.
+      const UNSET = '0000000000000000';
+      let html = `<option value="${UNSET}">-- unassigned --</option>`;
+      const shown = new Set();
+
+      // Add currently assigned ROM (may not be in scannedRoms if sensor was absent)
+      if (currentRom && currentRom !== '' && currentRom !== UNSET) {
+        const sel = ' selected';
+        html += `<option value="${currentRom}"${sel}>${currentRom}</option>`;
+        shown.add(currentRom);
+      }
+
+      // Add all scanned ROMs not already shown
+      for (const rom of scannedRoms) {
+        if (shown.has(rom)) continue;
+        const sel = (rom === currentRom) ? ' selected' : '';
+        html += `<option value="${rom}"${sel}>${rom}</option>`;
+        shown.add(rom);
+      }
+      return html;
+    }
+
+    function renderSensorMapperRows() {
+      const container = document.getElementById('sensor-mapper-rows');
+      if (!container) return;
+      const slotNames = currentState?.tempSensorSlotNames || [];
+      const sensorRoms = currentState?.sensorRoms || [];
+      const count = Math.max(slotNames.length, 8);
+
+      container.innerHTML = Array.from({ length: count }, (_, i) => {
+        const name    = slotNames[i]  || `Slot ${i}`;
+        const romHex  = sensorRoms[i] || '';
+        const isSet   = romHex !== '';
+        const badge   = isSet
+          ? `<span class="text-xs text-green-400 font-mono truncate max-w-[9rem]" title="${romHex}">${romHex.slice(0, 8)}…</span>`
+          : `<span class="text-xs text-gray-500">unassigned</span>`;
+        return `
+          <div class="flex items-center gap-3 bg-[#181818] rounded-2xl px-4 py-3">
+            <span class="text-sm text-gray-200 w-36 shrink-0">${name}</span>
+            ${badge}
+            <select id="rom-sel-${i}"
+              class="flex-1 bg-[#111] border border-[#333] rounded-xl px-2 py-1.5 text-xs text-gray-100 focus:outline-none focus:border-orange-400 font-mono">
+              ${buildRomOptions(romHex)}
+            </select>
+            <button onclick="applyRomMapping(${i})"
+              class="px-3 py-1.5 bg-orange-500 hover:bg-orange-400 rounded-xl text-xs font-medium text-white shrink-0">SET</button>
+          </div>`;
+      }).join('');
+    }
+
+    function applyRomMapping(slotIdx) {
+      const sel = document.getElementById(`rom-sel-${slotIdx}`);
+      if (!sel) return;
+      const romHex = sel.value;
+      sendCommand(`SENSOR:MAP:${slotIdx}:${romHex}`);
+    }
+
+    function initWebUI() {
+      setupMasterSlider();
+      setupMonSlider();
+      fetchState();
+      setInterval(fetchState, REFRESH_MS);
+    }
+
+    window.onload = initWebUI;
+  </script>
 </body>
 </html>
-)HTML";
+)rawliteral";
+
+    server.sendHeader("Cache-Control", "no-store, no-cache");
+    server.send(200, "text/html", html);
+}
 
 void webUiRegisterHandlers(WebServer& server)
 {
-    server.on("/", HTTP_GET, [&server]() {
-        String page(FPSTR(INDEX_HTML));
+    server.on("/", HTTP_GET, [&server]() { handleRoot(server); });
+    Serial.println("[WebUI] Embedded web UI ready – Master Power unified + Valves Control");
+}
 
-        page.replace("APP_TITLE_PLACEHOLDER",        STR_APP_TITLE);
-        page.replace("APP_SUBTITLE_PLACEHOLDER",     STR_APP_SUBTITLE);
-
-        page.replace("STATUS_RUNNING_PLACEHOLDER",   STR_STATUS_RUNNING);
-        page.replace("STATUS_STOPPED_PLACEHOLDER",   STR_STATUS_STOPPED);
-        page.replace("STATUS_SAFETY_PLACEHOLDER",    STR_STATUS_SAFETY);
-
-        page.replace("TITLE_MODE_PLACEHOLDER",       STR_TITLE_MODE);
-        page.replace("TITLE_MODE_SEL_PLACEHOLDER",   STR_TITLE_MODE_SEL);
-        page.replace("TITLE_MONITOR_PLACEHOLDER",    STR_TITLE_MONITOR);
-        page.replace("TITLE_CTRL_PLACEHOLDER",       STR_TITLE_CTRL);
-        page.replace("TITLE_CTRL_DIST_PLACEHOLDER",  STR_TITLE_CTRL_DIST);
-        page.replace("TITLE_CTRL_RECT_PLACEHOLDER",  STR_TITLE_CTRL_RECT);
-
-        page.replace("PROC_DIST_PLACEHOLDER",        STR_PROC_DIST);
-        page.replace("PROC_RECT_PLACEHOLDER",        STR_PROC_RECT);
-
-        page.replace("SENSOR1_NAME_PLACEHOLDER",     STR_SENSOR_NAME1);
-        page.replace("SENSOR2_NAME_PLACEHOLDER",     STR_SENSOR_NAME2);
-        page.replace("SENSOR3_NAME_PLACEHOLDER",     STR_SENSOR_NAME3);
-
-        page.replace("MON_PRESSURE_PLACEHOLDER",     STR_MON_PRESSURE);
-        page.replace("MON_LEVEL_PLACEHOLDER",        STR_MON_LEVEL);
-        page.replace("MON_FLOW_PLACEHOLDER",         STR_MON_FLOW);
-        page.replace("MON_TOTAL_PLACEHOLDER",        STR_MON_TOTAL);
-        page.replace("MON_SSRS_PLACEHOLDER",         STR_MON_SSRS);
-
-        page.replace("LEVEL_OK_PLACEHOLDER",         STR_LEVEL_OK);
-        page.replace("LEVEL_LOW_PLACEHOLDER",        STR_LEVEL_LOW);
-        page.replace("OFFLINE_PLACEHOLDER",          STR_OFFLINE);
-        page.replace("UNIT_DEGC_PLACEHOLDER",        STR_UNIT_DEGC);
-
-        page.replace("BTN_BACK_PLACEHOLDER",         STR_BTN_BACK);
-        page.replace("BTN_SAVE_PLACEHOLDER",         STR_BTN_SAVE);
-        page.replace("BTN_START_PLACEHOLDER",        STR_BTN_START);
-        page.replace("BTN_STOP_PLACEHOLDER",         STR_BTN_STOP);
-
-        server.send(200, "text/html; charset=utf-8", page);
-    });
+void webUiStartFetchTask()
+{
+    Serial.println("[WebUI] Embedded UI active (no remote fetch needed)");
 }

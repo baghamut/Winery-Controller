@@ -1,13 +1,19 @@
 // =============================================================================
-//  http_server.h  –  Arduino WebServer HTTP API
+//  http_server.h  –  HTTP server interface
 // =============================================================================
 #pragma once
 #include <Arduino.h>
 
-// Initialise and start the HTTP server.  Call once from setup().
+// ---------------------------------------------------------------------------
+// httpServerInit
+//   Register all URL routes and call server.begin().
+//   Call once from setup() after WiFi has connected.
+// ---------------------------------------------------------------------------
 void httpServerInit();
 
-// Call in loop() to handle incoming HTTP requests.
+// ---------------------------------------------------------------------------
+// httpServerHandle
+//   Process pending HTTP requests.
+//   Must be called from loop() on every iteration.
+// ---------------------------------------------------------------------------
 void httpServerHandle();
-
-bool handleOtaFromHttp(); // OTA Handler

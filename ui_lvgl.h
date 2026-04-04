@@ -1,22 +1,36 @@
 // =============================================================================
-//  ui_lvgl.h  –  LVGL UI interface (simplified 3-screen UI)
+//  ui_lvgl.h  –  LVGL UI interface (3-panel UI: Mode / Control / Monitor)
 // =============================================================================
 #pragma once
 #include <Arduino.h>
 
-// Initialise LVGL widgets and create all screens.
-// Call once from setup() after display/touch init.
+// ---------------------------------------------------------------------------
+// uiInit
+//   Build all LVGL screens and start the periodic refresh timer.
+//   Call once from setup() after lv_init() and touch init are complete.
+// ---------------------------------------------------------------------------
 void uiInit();
 
-// Request a refresh of LVGL widgets from g_state.
-// Safe to call from any task; just sets a flag consumed by an LVGL timer.
+// ---------------------------------------------------------------------------
+// uiRequestRefresh
+//   Thread-safe: sets a flag that the LVGL timer will consume on its next tick.
+//   Safe to call from any FreeRTOS task (sensorsTask, controlTask, loop()).
+// ---------------------------------------------------------------------------
 void uiRequestRefresh();
 
-// Actually update widgets from g_state.
-// Called only from the LVGL task/timer.
+// ---------------------------------------------------------------------------
+// uiRefreshFromState
+//   Reads g_state and updates all visible LVGL widgets accordingly.
+//   Must only be called from the LVGL task / timer callback (Core 1).
+//   Do not call directly from other tasks – use uiRequestRefresh() instead.
+// ---------------------------------------------------------------------------
 void uiRefreshFromState();
 
-// Optional helpers to switch screens explicitly (used by LVGL code only).
+// ---------------------------------------------------------------------------
+// Explicit panel-switch helpers
+//   Used when external logic needs to force a specific screen.
+//   Normally the LVGL refresh timer handles screen transitions automatically.
+// ---------------------------------------------------------------------------
 void uiShowModeScreen();
 void uiShowControlScreen();
 void uiShowMonitorScreen();

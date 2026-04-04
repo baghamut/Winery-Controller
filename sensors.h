@@ -4,16 +4,16 @@
 #pragma once
 #include <Arduino.h>
 
-// Initialise all sensor hardware. Call once from setup().
 void sensorsInit();
-
-// Periodic sensor update – read temps, pressure, level, flow
-// and write results into g_state.
-// Call from a FreeRTOS task or from loop() every ~1 second.
 void sensorsUpdate();
-
-// Reset accumulated flow total to zero (thread-safe).
 void flowResetTotal();
-
-// FreeRTOS task function – run on Core 0.
 void sensorsTask(void* pvParams);
+
+// DS18B20 bus scan
+int  sensorsScanBus();
+int  sensorsGetScannedCount();
+void sensorsGetScannedRom(int idx, uint8_t romOut[8]);
+
+// ROM address utilities (used by http_server.cpp and control.cpp)
+void romToHex(const uint8_t* rom, char* buf);   // buf >= 17 bytes
+bool hexToRom(const char* hex, uint8_t* romOut); // hex must be exactly 16 chars
