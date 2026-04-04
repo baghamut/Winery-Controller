@@ -1,140 +1,217 @@
 // =============================================================================
-//  sensors.cpp – DS18B20, pressure, level, flow → g_state
+//  sensors.cpp – DS18B20 (ROM-addressed), pressure, level, flow → g_state
 // =============================================================================
 #include "sensors.h"
 #include "config.h"
 #include "state.h"
 #include "ui_lvgl.h"
+#include "expander.h"
 
 #include <OneWire.h>
 #include <DallasTemperature.h>
+#include <string.h>
 
 // ---------------------------------------------------------------------------
 // DS18B20
 // ---------------------------------------------------------------------------
-static OneWire oneWire(PIN_ONEWIRE);
+static OneWire          oneWire(PIN_ONEWIRE);
 static DallasTemperature dallas(&oneWire);
-static int dsCount = 0;
 
 // ---------------------------------------------------------------------------
-// Flow sensor
+// 1-Wire bus mutex
+//   Protects the shared OneWire/DallasTemperature bus against concurrent
+//   access between sensorsTask (temperature reads) and the HTTP handler
+//   (sensorsScanBus).  Created in sensorsInit() before any task is started.
+// ---------------------------------------------------------------------------
+static SemaphoreHandle_t s_onewireMutex = nullptr;
+
+// ---------------------------------------------------------------------------
+// Bus scan cache  (written by sensorsScanBus, read by http_server.cpp)
+// ---------------------------------------------------------------------------
+static uint8_t s_scannedRoms[MAX_SENSORS][8];
+static int     s_scannedCount = 0;
+
+// ---------------------------------------------------------------------------
+// Product flow sensor (native GPIO interrupt)
 // ---------------------------------------------------------------------------
 volatile uint32_t g_flowPulses = 0;
 static uint32_t   lastFlowMillis = 0;
 
-// ISR for flow pulses
-void IRAM_ATTR flowISR() {
-    g_flowPulses++;
-}
+// Spinlock protecting g_waterDephlPulses / g_waterCondPulses.
+// These are incremented by flow2PollTask (a FreeRTOS task, not a hardware ISR),
+// so the ESP32 portMUX-based critical section is required — not noInterrupts().
+static portMUX_TYPE s_waterFlowMux = portMUX_INITIALIZER_UNLOCKED;
+
+void IRAM_ATTR flowISR() { g_flowPulses++; }
 
 // ---------------------------------------------------------------------------
-// Pressure filtering / online detection
+// Pressure filtering (unchanged from original)
 // ---------------------------------------------------------------------------
 static float    pressureFilteredBar = 0.0f;
 static bool     pressureOnline      = false;
 static uint8_t  pressureGoodCount   = 0;
 static uint8_t  pressureBadCount    = 0;
 
-// Tunables
-static const float   PRESSURE_MIN_BAR_ONLINE = 0.002f;             // ~82 ADC counts; below → treat as disconnected/zero
-static const float   PRESSURE_MAX_BAR_ONLINE = PRESSURE_MAX_BAR * 1.1f; // sanity ceiling (0.11 bar)
-static const float   PRESSURE_ALPHA          = 0.2f;               // low-pass filter
-static const uint8_t PRESSURE_GOOD_THRESH    = 12;                 // consecutive stable+in-range samples
-static const uint8_t PRESSURE_BAD_THRESH     = 8;                  // consecutive bad samples to go offline
+static const float   PRESSURE_MIN_BAR_ONLINE = 0.002f;
+static const float   PRESSURE_MAX_BAR_ONLINE = PRESSURE_MAX_BAR * 1.1f;
+static const float   PRESSURE_ALPHA          = 0.2f;
+static const uint8_t PRESSURE_GOOD_THRESH    = 12;
+static const uint8_t PRESSURE_BAD_THRESH     = 8;
 
-// Jitter / stability detection
-// A connected sensor is a low-impedance source → tight ADC readings.
-// A floating pin picks up EMI → wide, jumping readings.
-// We keep a rolling window of raw ADC counts and require the peak-to-peak
-// spread to be below PRESSURE_JITTER_THRESH before treating a reading as "good".
-static const uint8_t PRESSURE_JITTER_WINDOW  = 8;                  // rolling window size (samples)
-static const int     PRESSURE_JITTER_THRESH  = 40;                 // ADC counts; ≈0.001 bar @ 0.1 bar FS (~1% FS)
+static const uint8_t PRESSURE_JITTER_WINDOW  = 8;
+static const int     PRESSURE_JITTER_THRESH  = 40;
 static int      pressureRawWindow[PRESSURE_JITTER_WINDOW] = {};
 static uint8_t  pressureWinIdx   = 0;
-static uint8_t  pressureWinFill  = 0;   // how many slots are valid (0..PRESSURE_JITTER_WINDOW)
+static uint8_t  pressureWinFill  = 0;
 
 // ---------------------------------------------------------------------------
-// Init
+// ROM utility functions
+// ---------------------------------------------------------------------------
+void romToHex(const uint8_t* rom, char* buf) {
+    for (int i = 0; i < 8; i++) sprintf(buf + i * 2, "%02X", rom[i]);
+    buf[16] = '\0';
+}
+
+bool hexToRom(const char* hex, uint8_t* romOut) {
+    if (!hex || strlen(hex) != 16) return false;
+    for (int i = 0; i < 8; i++) {
+        char byte[3] = { hex[i * 2], hex[i * 2 + 1], '\0' };
+        char* end;
+        romOut[i] = (uint8_t)strtol(byte, &end, 16);
+        if (end != byte + 2) return false;   // invalid hex char
+    }
+    return true;
+}
+
+static bool romIsAssigned(const uint8_t* rom) {
+    for (int i = 0; i < 8; i++) if (rom[i]) return true;
+    return false;
+}
+
+// ---------------------------------------------------------------------------
+// sensorsInit
 // ---------------------------------------------------------------------------
 void sensorsInit() {
-    // DS18B20
+    s_onewireMutex = xSemaphoreCreateMutex();   // must be first; guards all 1-Wire access
+
     dallas.begin();
-    dsCount = dallas.getDeviceCount();
+    dallas.setResolution(DS18B20_RESOLUTION);
+    // setWaitForConversion left at default (true) so requestTemperatures()
+    // blocks ~750 ms and getTempC() always returns valid data on the same tick.
 
-    // Pressure ADC
-    analogReadResolution(12); // 0-4095
+    analogReadResolution(12);
 
-    // Level
-    pinMode(PIN_LEVEL, INPUT_PULLUP);
+    expanderInit();   // also creates the Wire mutex
 
-    // Flow
     pinMode(PIN_FLOW, INPUT_PULLUP);
     attachInterrupt(digitalPinToInterrupt(PIN_FLOW), flowISR, RISING);
-
     lastFlowMillis = millis();
 }
 
 // ---------------------------------------------------------------------------
-// Periodic update – read all sensors and update g_state
+// Bus scan  (call from HTTP handler; re-enumerates the 1-Wire bus)
+// ---------------------------------------------------------------------------
+int sensorsScanBus() {
+    if (!s_onewireMutex) return 0;   // called before sensorsInit() – should never happen
+    s_scannedCount = 0;
+    uint8_t addr[8];
+    // Acquire the bus mutex.  sensorsTask may be mid-read (requestTemperatures
+    // blocks ~750 ms), so we wait.  The scan is a rare manual operation and a
+    // brief HTTP-handler stall is acceptable.
+    xSemaphoreTake(s_onewireMutex, portMAX_DELAY);
+    oneWire.reset_search();
+    while (s_scannedCount < MAX_SENSORS && oneWire.search(addr)) {
+        memcpy(s_scannedRoms[s_scannedCount], addr, 8);
+        s_scannedCount++;
+    }
+    xSemaphoreGive(s_onewireMutex);
+    Serial.printf("[SCAN] 1-Wire: %d device(s) found\n", s_scannedCount);
+    return s_scannedCount;
+}
+
+int sensorsGetScannedCount() { return s_scannedCount; }
+
+void sensorsGetScannedRom(int idx, uint8_t romOut[8]) {
+    if (idx < 0 || idx >= s_scannedCount) { memset(romOut, 0, 8); return; }
+    memcpy(romOut, s_scannedRoms[idx], 8);
+}
+
+// ---------------------------------------------------------------------------
+// sensorsUpdate – called every ~1000 ms from sensorsTask
 // ---------------------------------------------------------------------------
 void sensorsUpdate() {
-    // --- Temperatures ---
-    dallas.requestTemperatures();
+    // -----------------------------------------------------------------------
+    // Temperatures – request all simultaneously, then read by ROM address.
+    //
+    // Pattern:
+    //   1. Short stateLock to snapshot ROM addresses into a local array.
+    //      This keeps stateLock duration to a memcpy, well under 1 ms.
+    //   2. All Dallas/OneWire I/O (requestTemperatures ~750 ms + scratchpad
+    //      reads) runs outside stateLock but inside s_onewireMutex.
+    //      This prevents concurrent access from sensorsScanBus().
+    //   3. Short stateLock to write the 8 temperature results.
+    // -----------------------------------------------------------------------
 
-    float t[3] = {
-        TEMP_OFFLINE_THRESH,
-        TEMP_OFFLINE_THRESH,
-        TEMP_OFFLINE_THRESH
-    };
-
-    for (int i = 0; i < dsCount && i < 3; ++i) {
-        float v = dallas.getTempCByIndex(i);
-        if (v == DEVICE_DISCONNECTED_C) v = TEMP_OFFLINE_THRESH;
-        t[i] = v;
-    }
-
+    // Step 1: snapshot ROM map
+    uint8_t roms[MAX_SENSORS][8];
     stateLock();
-    g_state.t1 = t[0];
-    g_state.t2 = t[1];
-    g_state.t3 = t[2];
+    memcpy(roms, g_state.tempSensorRom, sizeof(roms));
     stateUnlock();
 
-    // --- Pressure ---
+    // Step 2: bus I/O — guarded by the 1-Wire mutex only, stateLock NOT held
+    float temps[MAX_SENSORS];
+    xSemaphoreTake(s_onewireMutex, portMAX_DELAY);
+    dallas.requestTemperatures();
+    // DS18B20 at 12-bit needs ~750 ms; sensorsTask sleeps 1000 ms so we're fine.
+    for (int i = 0; i < MAX_SENSORS; i++) {
+        if (!romIsAssigned(roms[i])) {
+            temps[i] = TEMP_OFFLINE_THRESH;
+        } else {
+            float v = dallas.getTempC(roms[i]);
+            temps[i] = (v == DEVICE_DISCONNECTED_C) ? TEMP_OFFLINE_THRESH : v;
+        }
+    }
+    xSemaphoreGive(s_onewireMutex);
+
+    // Step 3: write results
+    stateLock();
+    g_state.roomTemp     = temps[0];
+    g_state.kettleTemp   = temps[1];
+    g_state.pillar1Temp  = temps[2];
+    g_state.pillar2Temp  = temps[3];
+    g_state.pillar3Temp  = temps[4];
+    g_state.dephlegmTemp = temps[5];
+    g_state.refluxTemp   = temps[6];
+    g_state.productTemp  = temps[7];
+    stateUnlock();
+
+    // -----------------------------------------------------------------------
+    // Pressure  (analog, GPIO9 – unchanged filtering logic)
+    // -----------------------------------------------------------------------
     int   raw = analogRead(PIN_PRESSURE);
     float bar = (float)raw / ADC_MAX * PRESSURE_MAX_BAR;
 
-    // --- Jitter / stability check ---
-    // Push raw count into rolling window.
     pressureRawWindow[pressureWinIdx] = raw;
     pressureWinIdx = (pressureWinIdx + 1) % PRESSURE_JITTER_WINDOW;
     if (pressureWinFill < PRESSURE_JITTER_WINDOW) pressureWinFill++;
 
     bool isStable = false;
     if (pressureWinFill >= PRESSURE_JITTER_WINDOW) {
-        int minRaw = pressureRawWindow[0], maxRaw = pressureRawWindow[0];
+        int mn = pressureRawWindow[0], mx = pressureRawWindow[0];
         for (uint8_t j = 1; j < PRESSURE_JITTER_WINDOW; ++j) {
-            if (pressureRawWindow[j] < minRaw) minRaw = pressureRawWindow[j];
-            if (pressureRawWindow[j] > maxRaw) maxRaw = pressureRawWindow[j];
+            if (pressureRawWindow[j] < mn) mn = pressureRawWindow[j];
+            if (pressureRawWindow[j] > mx) mx = pressureRawWindow[j];
         }
-        isStable = (maxRaw - minRaw) < PRESSURE_JITTER_THRESH;
+        isStable = (mx - mn) < PRESSURE_JITTER_THRESH;
     }
-    // Window not full yet → treat as unstable (not enough history)
 
-    // Basic sanity window + stability: both must pass to count as "good"
-    bool inRange = (bar >= PRESSURE_MIN_BAR_ONLINE &&
-                    bar <= PRESSURE_MAX_BAR_ONLINE);
+    bool inRange = (bar >= PRESSURE_MIN_BAR_ONLINE && bar <= PRESSURE_MAX_BAR_ONLINE);
     bool isGood  = inRange && isStable;
 
-    // Exponential low-pass filter (only when we have some prior value)
-    if (!pressureOnline && isGood) {
-        // First time we see something stable and sane: initialise filter
-        pressureFilteredBar = bar;
-    } else if (pressureOnline) {
-        pressureFilteredBar = PRESSURE_ALPHA * bar +
-                              (1.0f - PRESSURE_ALPHA) * pressureFilteredBar;
-    }
+    if (!pressureOnline && isGood)       pressureFilteredBar = bar;
+    else if (pressureOnline)             pressureFilteredBar = PRESSURE_ALPHA * bar +
+                                         (1.0f - PRESSURE_ALPHA) * pressureFilteredBar;
 
-    // Debounce online/offline state
     if (isGood) {
         if (pressureGoodCount < 255) pressureGoodCount++;
         if (pressureBadCount  > 0)   pressureBadCount--;
@@ -142,19 +219,12 @@ void sensorsUpdate() {
         if (pressureBadCount  < 255) pressureBadCount++;
         if (pressureGoodCount > 0)   pressureGoodCount--;
     }
-
     if (!pressureOnline && pressureGoodCount >= PRESSURE_GOOD_THRESH) {
-        pressureOnline   = true;
-        pressureBadCount = 0;
+        pressureOnline = true; pressureBadCount = 0;
     } else if (pressureOnline && pressureBadCount >= PRESSURE_BAD_THRESH) {
-        pressureOnline    = false;
-        pressureGoodCount = 0;
-        pressureWinFill   = 0;   // flush window so next connect re-qualifies cleanly
+        pressureOnline = false; pressureGoodCount = 0; pressureWinFill = 0;
     }
 
-    // Publish into state:
-    // - when online: filtered, clamped value
-    // - when offline: SENSOR_OFFLINE
     stateLock();
     if (pressureOnline) {
         float p = pressureFilteredBar;
@@ -166,33 +236,56 @@ void sensorsUpdate() {
     }
     stateUnlock();
 
-    // --- Level ---
-    bool levelOk = (digitalRead(PIN_LEVEL) == LOW); // LOW = level OK
+    // -----------------------------------------------------------------------
+    // Level (expander 1, bit EXPANDER_LEVEL)
+    // -----------------------------------------------------------------------
+    bool lvlOk = levelIsOk();
     stateLock();
-    g_state.levelHigh = levelOk;
+    g_state.levelHigh = lvlOk;
     stateUnlock();
 
-    // --- Flow & total volume ---
+    // -----------------------------------------------------------------------
+    // Product flow  (native GPIO interrupt counter)
+    // -----------------------------------------------------------------------
     uint32_t now = millis();
     uint32_t dt  = now - lastFlowMillis;
     if (dt >= FLOW_COMPUTE_INTERVAL_MS) {
         uint32_t pulses;
-        noInterrupts();
-        pulses = g_flowPulses;
-        g_flowPulses = 0;
-        interrupts();
+        noInterrupts(); pulses = g_flowPulses; g_flowPulses = 0; interrupts();
 
         float litres = pulses / FLOW_PULSES_PER_LITRE;
-        float lpm    = (dt > 0) ? (litres * 60000.0f / dt) : 0.0f;
+        float lpm    = (dt > 0) ? litres * 60000.0f / dt : 0.0f;
 
         stateLock();
-        // If we never saw pulses since boot, treat as offline.
-        if (lpm <= 0.0f && g_state.totalVolumeLiters <= 0.0f) {
-            g_state.flowRateLPM = SENSOR_OFFLINE;
-        } else {
-            g_state.flowRateLPM = lpm;
-        }
+        g_state.flowRateLPM = (lpm <= 0.0f && g_state.totalVolumeLiters <= 0.0f)
+                              ? SENSOR_OFFLINE : lpm;
         g_state.totalVolumeLiters += litres;
+        stateUnlock();
+
+        // Water flow sensors  (expander 2, polled by flow2PollTask)
+        // -----------------------------------------------------------------------
+        // g_waterDephlPulses / g_waterCondPulses are incremented by flow2PollTask,
+        // a FreeRTOS software task — NOT a hardware ISR.  noInterrupts() only
+        // masks hardware interrupts; it does not prevent the FreeRTOS scheduler
+        // from switching to flow2PollTask between the two reads.
+        // taskENTER_CRITICAL() also suspends the scheduler tick on this core,
+        // giving a safe atomic read-and-reset for both counters.
+        uint32_t dephlPulses, condPulses;
+        taskENTER_CRITICAL(&s_waterFlowMux);
+        dephlPulses = g_waterDephlPulses; g_waterDephlPulses = 0;
+        condPulses  = g_waterCondPulses;  g_waterCondPulses  = 0;
+        taskEXIT_CRITICAL(&s_waterFlowMux);
+
+        float dephlLpm = (dt > 0) ? (dephlPulses / FLOW_PULSES_PER_LITRE) * 60000.0f / dt : 0.0f;
+        float condLpm  = (dt > 0) ? (condPulses  / FLOW_PULSES_PER_LITRE) * 60000.0f / dt : 0.0f;
+
+        stateLock();
+        // Stay SENSOR_OFFLINE until first non-zero reading so the Web UI
+        // shows "Offline" rather than "0.00" for unconnected sensors.
+        if (dephlPulses > 0 || g_state.waterDephlLpm > SENSOR_OFFLINE + 1.0f)
+            g_state.waterDephlLpm = dephlLpm;
+        if (condPulses > 0 || g_state.waterCondLpm > SENSOR_OFFLINE + 1.0f)
+            g_state.waterCondLpm  = condLpm;
         stateUnlock();
 
         lastFlowMillis = now;
@@ -200,12 +293,13 @@ void sensorsUpdate() {
 }
 
 // ---------------------------------------------------------------------------
-// FreeRTOS task: call sensorsUpdate() and refresh UI
+// sensorsTask
 // ---------------------------------------------------------------------------
 void sensorsTask(void* pvParams) {
-    sensorsInit();
     (void)pvParams;
-
+    // sensorsInit() is called once from setup() before this task is created.
+    // Do NOT call it here — expanderInit() would recreate the Wire mutex and
+    // corrupt flow2PollTask which is already using it.
     for (;;) {
         sensorsUpdate();
         uiRequestRefresh();
@@ -214,13 +308,10 @@ void sensorsTask(void* pvParams) {
 }
 
 // ---------------------------------------------------------------------------
-// Reset accumulated flow total to zero
+// flowResetTotal
 // ---------------------------------------------------------------------------
 void flowResetTotal() {
-    noInterrupts();
-    g_flowPulses = 0;
-    interrupts();
-
+    noInterrupts(); g_flowPulses = 0; interrupts();
     stateLock();
     g_state.totalVolumeLiters = 0.0f;
     stateUnlock();
