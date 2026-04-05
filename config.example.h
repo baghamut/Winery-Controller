@@ -9,7 +9,7 @@
 // ---------------------------------------------------------------------------
 // Firmware version
 // ---------------------------------------------------------------------------
-#define FW_VERSION  "3.5.4"
+#define FW_VERSION  "3.5.8"
 
 // ---------------------------------------------------------------------------
 // OTA firmware URL
@@ -181,10 +181,10 @@
 // ---------------------------------------------------------------------------
 // Wi-Fi
 // ---------------------------------------------------------------------------
-// #define WIFI_SSID_DEFAULT  "your_ssid_here"
-// #define WIFI_PASS_DEFAULT  "***REMOVED***"
-#define WIFI_SSID_DEFAULT        "Alex"
-#define WIFI_PASS_DEFAULT        "0544759839"
+// #define WIFI_SSID_DEFAULT  "YOUR_SSID"
+// #define WIFI_PASS_DEFAULT  "YOUR_PASSWORD"
+#define WIFI_SSID_DEFAULT        "YOUR_SSID"
+#define WIFI_PASS_DEFAULT        "YOUR_PASSWORD"
 #define WIFI_CONNECT_TIMEOUT_MS  15000
 
 // ---------------------------------------------------------------------------

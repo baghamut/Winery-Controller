@@ -53,7 +53,7 @@ constexpr const char* STR_HDR_T1_FMT           = "%s: %.1f";
 // Units / generic values
 // ---------------------------------------------------------------------------
 constexpr const char* STR_UNIT_DEGC            = "\xC2\xB0""C";  // UTF-8 °C
-constexpr const char* STR_UNIT_BAR             = "bar";
+constexpr const char* STR_UNIT_BAR             = "kPa";
 constexpr const char* STR_UNIT_LPM             = "L/min";
 constexpr const char* STR_UNIT_LITERS          = "L";
 constexpr const char* STR_OFFLINE              = "Offline";
@@ -130,7 +130,7 @@ constexpr const char* STR_VALVE_PROTO_MSG      = "Web-only prototype. Logic is n
 // Prompt / validation text
 // ---------------------------------------------------------------------------
 constexpr const char* STR_PROMPT_NEW_DANGER    = "New danger threshold for";
-constexpr const char* STR_PROMPT_ENTER_0_3_BAR = "Enter 0-3 bar";
+constexpr const char* STR_PROMPT_ENTER_0_3_BAR = "Enter 0-10 kPa";
 constexpr const char* STR_PROMPT_ENTER_0_200   = "Enter 0-200";
 
 // ---------------------------------------------------------------------------

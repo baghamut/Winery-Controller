@@ -102,8 +102,12 @@ void ssrSetDuty(int ssr, float percent) {
 //   Used for emergency stops, STOP command, and mode transitions.
 // ---------------------------------------------------------------------------
 void ssrAllOff() {
+    if (s_ssrTimer) esp_timer_stop(s_ssrTimer);   // wait for any in-flight callback
+
     for (int i = 0; i < SSR_COUNT; i++) {
         s_duty[i] = 0;
-        digitalWrite(SSR_PINS[i], LOW);    // immediate hardware off
+        digitalWrite(SSR_PINS[i], LOW);
     }
+
+    if (s_ssrTimer) esp_timer_start_periodic(s_ssrTimer, SSR_TICK_US);
 }

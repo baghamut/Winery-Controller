@@ -40,9 +40,9 @@ static uint32_t   lastFlowMillis = 0;
 // Spinlock protecting g_waterDephlPulses / g_waterCondPulses.
 // These are incremented by flow2PollTask (a FreeRTOS task, not a hardware ISR),
 // so the ESP32 portMUX-based critical section is required — not noInterrupts().
-static portMUX_TYPE s_waterFlowMux = portMUX_INITIALIZER_UNLOCKED;
+portMUX_TYPE g_waterFlowMux = portMUX_INITIALIZER_UNLOCKED;
 
-void IRAM_ATTR flowISR() { g_flowPulses++; }
+void IRAM_ATTR flowISR() { g_flowPulses = g_flowPulses + 1; }
 
 // ---------------------------------------------------------------------------
 // Pressure filtering (unchanged from original)
@@ -271,10 +271,10 @@ void sensorsUpdate() {
         // taskENTER_CRITICAL() also suspends the scheduler tick on this core,
         // giving a safe atomic read-and-reset for both counters.
         uint32_t dephlPulses, condPulses;
-        taskENTER_CRITICAL(&s_waterFlowMux);
+        taskENTER_CRITICAL(&g_waterFlowMux);
         dephlPulses = g_waterDephlPulses; g_waterDephlPulses = 0;
         condPulses  = g_waterCondPulses;  g_waterCondPulses  = 0;
-        taskEXIT_CRITICAL(&s_waterFlowMux);
+        taskEXIT_CRITICAL(&g_waterFlowMux);
 
         float dephlLpm = (dt > 0) ? (dephlPulses / FLOW_PULSES_PER_LITRE) * 60000.0f / dt : 0.0f;
         float condLpm  = (dt > 0) ? (condPulses  / FLOW_PULSES_PER_LITRE) * 60000.0f / dt : 0.0f;

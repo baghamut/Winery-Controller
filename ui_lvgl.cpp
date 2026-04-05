@@ -20,6 +20,9 @@
 
 extern const lv_img_dsc_t img_barrel;
 
+static constexpr float BAR_TO_KPA = 100.0f;
+static constexpr float KPA_TO_BAR = 0.01f;
+
 extern "C" void        wifiApplyConfig(const char* ssid, const char* pass);
 extern "C" const char* wifiGetSsid();
 extern "C" const char* wifiGetPass();
@@ -271,8 +274,9 @@ static void cbMasterSliderReleased(lv_event_t* e)
 {
     lv_obj_t* sl = (lv_obj_t*)lv_event_get_target(e);
     int32_t v = lv_slider_get_value(sl);
-    // Single NVS write on finger-lift
-    handleCommand("MASTER:" + String(v));
+    char buf[16];
+    snprintf(buf, sizeof(buf), "MASTER:%d", (int)v);
+    postCommand(buf);
 }
 
 // ===========================================================================
@@ -553,7 +557,10 @@ static void buildTmaxPanel()
             stateLock();
             bool isRect = (g_state.processMode == 2);
             stateUnlock();
-            handleCommand(String(isRect ? "THRESH:R:PD:" : "THRESH:D:PD:") + String(val));
+            float kpa = atof(val);
+            char barStr[12];
+            snprintf(barStr, sizeof(barStr), "%.4f", kpa * KPA_TO_BAR);
+            handleCommand(String(isRect ? "THRESH:R:PD:" : "THRESH:D:PD:") + String(barStr));
         } else {
             // Temperature danger threshold (sensor index 2 = Kettle, 3 = Pillar 1)
             handleCommand("TMAX:" + String(s_activeTmaxSensor) + ":SET:" + String(val));
@@ -594,9 +601,9 @@ static void cbOpenTmaxConfig(lv_event_t* e)
     float val;
     if (s_activeTmaxSensor == 0) {
         // Pressure limit
-        val = (g_state.processMode == 2)
+        val = ((g_state.processMode == 2)
             ? g_state.threshRect.pressDanger
-            : g_state.threshDist.pressDanger;
+            : g_state.threshDist.pressDanger) * BAR_TO_KPA;
     } else {
         // Temperature limit – index is (s_activeTmaxSensor - 1): 1 = Kettle, 2 = Pillar
         val = (g_state.processMode == 2)
@@ -1282,7 +1289,7 @@ void uiRefreshFromState()
             char buf[48];
             if (i == 0) {
                 // Pressure danger threshold
-                snprintf(buf, sizeof(buf), "%s: %.2f bar", smaxLabels[0], thr.pressDanger);
+                snprintf(buf, sizeof(buf), "%s: %.1f kPa", smaxLabels[0], thr.pressDanger * BAR_TO_KPA);
             } else {
                 // tempDanger[1]=Tank, tempDanger[2]=Pillar
                 float val = thr.tempDanger[i];
@@ -1405,15 +1412,15 @@ void uiRefreshFromState()
             lv_obj_remove_state(mon_pLbl, LV_STATE_USER_2);
             lv_obj_add_state(mon_pLbl,    LV_STATE_USER_1);
         } else if (s.pressureBar >= thr.pressDanger) {
-            snprintf(b, sizeof(b), "%.2f bar", s.pressureBar);
+            snprintf(b, sizeof(b), "%.1f kPa", s.pressureBar * BAR_TO_KPA);
             lv_obj_remove_state(mon_pLbl, LV_STATE_USER_2);
             lv_obj_add_state(mon_pLbl,    LV_STATE_USER_1);
         } else if (s.pressureBar >= thr.pressWarn) {
-            snprintf(b, sizeof(b), "%.2f bar", s.pressureBar);
+            snprintf(b, sizeof(b), "%.1f kPa", s.pressureBar * BAR_TO_KPA);
             lv_obj_remove_state(mon_pLbl, LV_STATE_USER_1);
             lv_obj_add_state(mon_pLbl,    LV_STATE_USER_2);
         } else {
-            snprintf(b, sizeof(b), "%.2f bar", s.pressureBar);
+            snprintf(b, sizeof(b), "%.1f kPa", s.pressureBar * BAR_TO_KPA);
             lv_obj_remove_state(mon_pLbl, LV_STATE_USER_1);
             lv_obj_remove_state(mon_pLbl, LV_STATE_USER_2);
         }

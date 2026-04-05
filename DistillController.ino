@@ -101,6 +101,10 @@ static TaskHandle_t h_sensors = nullptr;
 static TaskHandle_t h_control = nullptr;
 static TaskHandle_t h_lvgl    = nullptr;
 
+// Command queue – LVGL callbacks post here; loop() drains and calls handleCommand().
+// 128 bytes per slot covers the longest possible command (WIFI:SET with encoded creds).
+QueueHandle_t g_cmdQueue = nullptr;
+
 // ===========================================================================
 //  Forward declarations
 // ===========================================================================
@@ -313,6 +317,22 @@ void wifiConnect()
 }
 
 
+void postCommand(const char* cmd)
+{
+    if (!g_cmdQueue) {
+        // Queue not yet created (called during setup) – execute directly
+        handleCommand(String(cmd));
+        return;
+    }
+    char buf[128];
+    strncpy(buf, cmd, sizeof(buf) - 1);
+    buf[sizeof(buf) - 1] = '\0';
+    if (xQueueSend(g_cmdQueue, buf, 0) != pdTRUE) {
+        // Queue full – shouldn't happen with 8 slots, log and drop
+        Serial.printf("[CMD] postCommand queue full, dropped: %s\n", buf);
+    }
+}
+
 // ===========================================================================
 //  setup()
 // ===========================================================================
@@ -345,6 +365,8 @@ void setup()
     //    stateInit() loads all persisted values (processMode, masterPower,
     //    wasRunning, lastTankTempC, thresholds, etc.) from NVS.
     stateInit();
+    // Command queue – must exist before lvglTask or any LVGL callback fires
+    g_cmdQueue = xQueueCreate(8, 128);
     prefs.begin(NVS_NAMESPACE, false);
     prefs.end();
 
@@ -540,14 +562,21 @@ static uint32_t s_lastDiag     = 0;    // periodic diagnostic log interval
 
 void loop()
 {
-    // Deferred WiFi reconnect – triggered by WIFI:SET command from either UI.
-    // Runs here so the LVGL task never blocks waiting for a WiFi association.
+// Deferred WiFi reconnect – triggered by WIFI:SET command from either UI.
     if (s_wifiReconnectPending) {
         s_wifiReconnectPending = false;
         WiFi.disconnect(true, true);
         delay(100);
         Serial.println("[WiFi] Reconnecting with new config...");
         wifiConnect();
+    }
+
+    // Drain LVGL-deferred commands (NVS writes must not run inside lvglTask)
+    {
+        char buf[128];
+        while (xQueueReceive(g_cmdQueue, buf, 0) == pdTRUE) {
+            handleCommand(String(buf));
+        }
     }
 
     // Process any pending HTTP client requests

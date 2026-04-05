@@ -18,6 +18,7 @@
 // =============================================================================
 #include "expander.h"
 #include <Wire.h>
+#include "sensors.h"   // for g_waterFlowMux
 
 // ---------------------------------------------------------------------------
 // Wire mutex – created in expanderInit(), used by all Wire callers.
@@ -144,8 +145,10 @@ void flow2PollTask(void* pvParams) {
         if (avail) {
             // Count falling edges (HIGH→LOW = sensor pulse active-low)
             uint8_t fell = prev & (~curr);
+            taskENTER_CRITICAL(&g_waterFlowMux);
             if (fell & (1u << EXPANDER2_FLOW_DEPHL)) g_waterDephlPulses++;
             if (fell & (1u << EXPANDER2_FLOW_COND))  g_waterCondPulses++;
+            taskEXIT_CRITICAL(&g_waterFlowMux);
             prev = curr;
         }
 

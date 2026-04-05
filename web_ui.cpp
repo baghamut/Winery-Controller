@@ -220,6 +220,11 @@ static void handleRoot(WebServer& server)
       return (s && s.label) ? s.label : fallback;
     }
 
+    function isPressureSensorId(id) {
+        const s = currentState?.ruleSensors?.find(s => s.id === id);
+        return !!(s && s.kind === 2);
+    }
+
     function sendCommand(cmd) {
       const form = new FormData();
       form.append('plain', cmd);
@@ -388,23 +393,31 @@ static void handleRoot(WebServer& server)
       const rules = currentState.valveRules || [];
       const opens = currentState.valveOpen  || [];
 
-      const condRow = (i, type, cond) => `
-        <div class="flex items-center gap-2 flex-wrap">
-          <span class="text-gray-400 w-24 shrink-0 text-xs">${type === 'open' ? 'Open when' : 'Close when'}:</span>
-          <select id="v${i}-${type}-sensor"
-            class="bg-[#111] border border-[#333] rounded-xl px-2 py-1.5 text-xs text-gray-100 focus:outline-none focus:border-orange-400">
-            ${buildSensorOptions(cond.sensorId)}
-          </select>
-          <select id="v${i}-${type}-op"
-            class="bg-[#111] border border-[#333] rounded-xl px-2 py-1.5 text-xs text-gray-100 w-14 focus:outline-none focus:border-orange-400">
-            ${buildOpOptions(cond.op)}
-          </select>
-          <input type="number" step="0.1" id="v${i}-${type}-val"
-            class="bg-[#111] border border-[#333] rounded-xl px-2 py-1.5 text-xs text-gray-100 w-20 focus:outline-none focus:border-orange-400"
-            value="${cond.value.toFixed(1)}">
-          <button onclick="applyValveCondition(${i},'${type}')"
-            class="px-3 py-1.5 bg-orange-500 hover:bg-orange-400 rounded-xl text-xs font-medium text-white">SET</button>
-        </div>`;
+      const condRow = (i, type, cond) => {
+          const isPress  = isPressureSensorId(cond.sensorId);
+          const dispVal  = isPress
+              ? (cond.value * 100).toFixed(1)
+              : cond.value.toFixed(1);
+          const unitHint = isPress ? ' kPa' : '';
+          return `
+          <div class="flex items-center gap-2 flex-wrap">
+              <span class="text-gray-400 w-24 shrink-0 text-xs">${type === 'open' ? 'Open when' : 'Close when'}:</span>
+              <select id="v${i}-${type}-sensor"
+                  class="bg-[#111] border border-[#333] rounded-xl px-2 py-1.5 text-xs text-gray-100 focus:outline-none focus:border-orange-400">
+                  ${buildSensorOptions(cond.sensorId)}
+              </select>
+              <select id="v${i}-${type}-op"
+                  class="bg-[#111] border border-[#333] rounded-xl px-2 py-1.5 text-xs text-gray-100 w-14 focus:outline-none focus:border-orange-400">
+                  ${buildOpOptions(cond.op)}
+              </select>
+              <input type="number" step="0.1" id="v${i}-${type}-val"
+                  class="bg-[#111] border border-[#333] rounded-xl px-2 py-1.5 text-xs text-gray-100 w-20 focus:outline-none focus:border-orange-400"
+                  value="${dispVal}">
+              <span class="text-xs text-gray-400 w-6">${unitHint}</span>
+              <button onclick="applyValveCondition(${i},'${type}')"
+                  class="px-3 py-1.5 bg-orange-500 hover:bg-orange-400 rounded-xl text-xs font-medium text-white">SET</button>
+          </div>`;
+      };
 
       container.innerHTML = names.map((name, i) => {
         const rule = rules[i] || { openWhen: {sensorId:0, op:0, value:0}, closeWhen: {sensorId:0, op:0, value:0} };
@@ -426,12 +439,14 @@ static void handleRoot(WebServer& server)
     }
 
     function applyValveCondition(valveIdx, type) {
-      const sensorId = parseInt(document.getElementById(`v${valveIdx}-${type}-sensor`).value, 10);
-      const op       = document.getElementById(`v${valveIdx}-${type}-op`).value;
-      const val      = parseFloat(document.getElementById(`v${valveIdx}-${type}-val`).value);
-      if (isNaN(val)) { alert('Invalid threshold value'); return; }
-      const cmdType = type === 'open' ? 'OPENCFG' : 'CLOSECFG';
-      sendCommand(`VALVE:${valveIdx}:${cmdType}:${sensorId}:${op}:${val.toFixed(2)}`);
+        const sensorId = parseInt(document.getElementById(`v${valveIdx}-${type}-sensor`).value, 10);
+        const op       = document.getElementById(`v${valveIdx}-${type}-op`).value;
+        let   val      = parseFloat(document.getElementById(`v${valveIdx}-${type}-val`).value);
+        if (isNaN(val)) { alert('Invalid threshold value'); return; }
+        // Input is in kPa for pressure sensors — convert back to bar for storage
+        if (isPressureSensorId(sensorId)) val = val / 100;
+        const cmdType = type === 'open' ? 'OPENCFG' : 'CLOSECFG';
+        sendCommand(`VALVE:${valveIdx}:${cmdType}:${sensorId}:${op}:${val.toFixed(4)}`);
     }
 
     // Lightweight badge-only update – called on every poll when screen-3 is visible.
@@ -465,17 +480,17 @@ static void handleRoot(WebServer& server)
         container.appendChild(row);
       };
 
-      addRow(currentState.smaxLabel1 || str('labelPressure', 'Pressure'), thr.pressDanger.toFixed(2), ` ${str('unitBar', 'bar')}`, () => {
-        const label = currentState.smaxLabel1 || str('labelPressure', 'Pressure');
-        const newVal = prompt(`New ${label} danger threshold (${str('unitBar', 'bar')}):`, thr.pressDanger.toFixed(2));
-        if (newVal === null) return;
-        const num = parseFloat(newVal);
-        if (isNaN(num) || num < 0 || num > 3) {
-          alert(str('promptEnter03Bar', 'Enter 0-3 bar'));
-          return;
-        }
-        const isRect = pm === 2;
-        sendCommand((isRect ? 'THRESH:R:PD:' : 'THRESH:D:PD:') + num.toFixed(2));
+      addRow(currentState.smaxLabel1 || str('labelPressure', 'Pressure'), (thr.pressDanger * 100).toFixed(1), ` ${str('unitBar', 'kPa')}`, () => {
+          const label = currentState.smaxLabel1 || str('labelPressure', 'Pressure');
+          const newVal = prompt(`New ${label} danger threshold (kPa):`, (thr.pressDanger * 100).toFixed(1));
+          if (newVal === null) return;
+          const num = parseFloat(newVal);
+          if (isNaN(num) || num < 0 || num > 10) {
+              alert(str('promptEnter03Bar', 'Enter 0-10 kPa'));
+              return;
+          }
+          const isRect = pm === 2;
+          sendCommand((isRect ? 'THRESH:R:PD:' : 'THRESH:D:PD:') + (num / 100).toFixed(4));
       });
 
       addRow(currentState.smaxLabel2 || str('sensorName2', 'Kettle'),  thr.tempDanger[1].toFixed(1), str('unitDegC', '°C'), () => editThreshold(2, thr.tempDanger[1], currentState.smaxLabel2 || str('sensorName2', 'Kettle')));
@@ -561,7 +576,7 @@ static void handleRoot(WebServer& server)
       } else {
         const pCls = currentState.pressureBar >= thr.pressDanger ? 'sensor-danger'
                    : currentState.pressureBar >= thr.pressWarn   ? 'sensor-warn' : '';
-        rows.push(row(str('labelPressure', 'Pressure'), `${currentState.pressureBar.toFixed(2)} ${unitBar}`, pCls));
+        rows.push(row(str('labelPressure', 'Pressure'), `${(currentState.pressureBar * 100).toFixed(1)} ${unitBar}`, pCls));
       }
 
       // Level – always shown

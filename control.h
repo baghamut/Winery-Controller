@@ -51,3 +51,12 @@ void handleCommand(const String& cmd);
 
 // Instant SSR Response on Power Change
 void applySsrFromState();
+
+// ---------------------------------------------------------------------------
+// postCommand
+//   Thread-safe alternative to handleCommand() for calls originating inside
+//   the LVGL task. Posts to a queue drained by loop() so NVS writes never
+//   block lv_timer_handler().
+//   Falls back to direct handleCommand() if called before the queue exists.
+// ---------------------------------------------------------------------------
+void postCommand(const char* cmd);
