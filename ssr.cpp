@@ -1,19 +1,26 @@
 // =============================================================================
-//  ssr.cpp  –  SSR driver
+//  ssr.cpp  –  SSR driver  (software time-proportional, replaces LEDC)
 //
-//  Uses the ESP32 Arduino core v3 pin-based LEDC API:
-//    ledcAttach(pin, freq, resolution) – replaces old ledcSetup + ledcAttachPin
-//    ledcWrite(pin, duty)              – replaces old ledcWrite(channel, duty)
+//  The ESP32-S3 LEDC peripheral cannot generate 10 Hz: the required divider
+//  value (~8 000 000) exceeds the 18-bit hardware maximum (262 143).
+//  Instead, an esp_timer fires every SSR_TICK_MS (100 ms).  Each SSR_PERIOD_MS
+//  (2 s) cycle is divided into SSR_TICKS_PER_PERIOD (20) ticks.
+//  Duty 0–100 % → 0–20 ON ticks per period (5 % resolution, adequate for
+//  proportional heater control).
+//
+//  Public API is unchanged:
+//    ssrInit()           – configure GPIO + start timer
+//    ssrSetDuty(n, pct)  – set SSR n (1-based) to pct % duty
+//    ssrAllOff()         – immediately de-energise all SSRs
 //
 //  This file is a pure hardware abstraction layer.
-//  It knows NOTHING about processMode or masterPower.
 //  All policy (which SSRs run, at what duty) is in control.cpp.
 // =============================================================================
 #include "ssr.h"
 #include "config.h"
+#include "esp_timer.h"
 
-// Map SSR number (1-based index) to GPIO pin.
-// Order MUST match PIN_SSR1…PIN_SSR5 in config.h.
+// GPIO pin map: index 0 = SSR1 … index 4 = SSR5
 static const uint8_t SSR_PINS[SSR_COUNT] = {
     PIN_SSR1,   // SSR1 – Distillation heater A
     PIN_SSR2,   // SSR2 – Distillation heater B
@@ -22,50 +29,81 @@ static const uint8_t SSR_PINS[SSR_COUNT] = {
     PIN_SSR5    // SSR5 – Rectification heater B
 };
 
+// Desired duty for each SSR: integer 0–100 (percent).
+// Written by ssrSetDuty() / ssrAllOff() from controlTask (Core 0).
+// Read inside ssrTimerCb() from the esp_timer service task.
+// uint8_t stores are atomic on 32-bit Xtensa; volatile prevents caching.
+static volatile uint8_t s_duty[SSR_COUNT] = {0, 0, 0, 0, 0};
+
+// Current position within the period: 0 … SSR_TICKS_PER_PERIOD-1.
+// Only touched inside ssrTimerCb() – no concurrent access.
+static uint8_t s_tick = 0;
+
+static esp_timer_handle_t s_ssrTimer = nullptr;
+
 // ---------------------------------------------------------------------------
-// ssrInit
-//   Attach all SSR pins to the LEDC peripheral and set duty = 0.
-//   ledcAttach(pin, freq, resolution):
-//     • freq = SSR_LEDC_FREQ_HZ  (10 Hz – appropriate for resistive heaters)
-//     • resolution = SSR_LEDC_RESOLUTION  (8-bit → duty range 0–255)
+// ssrTimerCb
+//   Called every SSR_TICK_MS from the esp_timer service task.
+//   Drives each SSR pin HIGH during the first (duty × period / 100) ticks.
 // ---------------------------------------------------------------------------
-void ssrInit() {
+static void ssrTimerCb(void* /*arg*/) {
+    if (++s_tick >= SSR_TICKS_PER_PERIOD) s_tick = 0;
+
     for (int i = 0; i < SSR_COUNT; i++) {
-        // Configure pin as PWM output on the LEDC peripheral
-        ledcAttach(SSR_PINS[i], SSR_LEDC_FREQ_HZ, SSR_LEDC_RESOLUTION);
-        // Start fully off – never energise a heater at boot without explicit
-        // user action (or a valid auto-restore check)
-        ledcWrite(SSR_PINS[i], 0);
+        uint8_t d = s_duty[i];                               // atomic read
+
+        bool on;
+        if      (d == 0)   on = false;                       // fast path: fully off
+        else if (d >= 100) on = true;                        // fast path: fully on
+        else               on = (s_tick < (d * SSR_TICKS_PER_PERIOD / 100u));
+
+        digitalWrite(SSR_PINS[i], on ? HIGH : LOW);
     }
 }
 
 // ---------------------------------------------------------------------------
+// ssrInit
+//   Configure all SSR pins as GPIO outputs and start the period timer.
+//   Call once from setup() before starting controlTask().
+// ---------------------------------------------------------------------------
+void ssrInit() {
+    for (int i = 0; i < SSR_COUNT; i++) {
+        pinMode(SSR_PINS[i], OUTPUT);
+        digitalWrite(SSR_PINS[i], LOW);    // never energise heaters at boot
+    }
+
+    const esp_timer_create_args_t args = {
+        .callback             = ssrTimerCb,
+        .arg                  = nullptr,
+        .dispatch_method      = ESP_TIMER_TASK,  // safe for digitalWrite
+        .name                 = "ssrTimer",
+        .skip_unhandled_events = true,           // drop missed ticks on overload
+    };
+    esp_timer_create(&args, &s_ssrTimer);
+    esp_timer_start_periodic(s_ssrTimer, SSR_TICK_US);
+}
+
+// ---------------------------------------------------------------------------
 // ssrSetDuty
-//   Converts a percentage (0–100) to a LEDC duty count and writes it.
-//   The clamping ensures hardware safety even if the caller passes bad values.
+//   Sets the time-proportional duty cycle for one SSR.
+//   ssr:     1–5  (maps to SSR1–SSR5 / PIN_SSR1–PIN_SSR5)
+//   percent: 0.0–100.0 (clamped; rounded to nearest integer %)
 // ---------------------------------------------------------------------------
 void ssrSetDuty(int ssr, float percent) {
-    if (ssr < 1 || ssr > SSR_COUNT) return;    // ignore out-of-range SSR number
-
-    // Clamp to valid range before any arithmetic
+    if (ssr < 1 || ssr > SSR_COUNT) return;
     float clamped = constrain(percent, 0.0f, 100.0f);
-
-    // Convert percentage to duty count.
-    // maxDuty = (2^resolution - 1) = 255 for 8-bit.
-    uint32_t maxDuty = (1u << SSR_LEDC_RESOLUTION) - 1u;
-    uint32_t duty    = (uint32_t)((clamped / 100.0f) * (float)maxDuty);
-
-    ledcWrite(SSR_PINS[ssr - 1], duty);
+    s_duty[ssr - 1] = (uint8_t)(clamped + 0.5f);    // round to nearest %
 }
 
 // ---------------------------------------------------------------------------
 // ssrAllOff
-//   Writes duty = 0 to every SSR pin directly.
-//   Used for emergency stops, STOP command, and safe shutdown.
-//   Bypasses percentage conversion for speed.
+//   Forces all 5 SSR outputs LOW immediately (does not wait for next tick).
+//   Clears s_duty[] so the timer keeps them off.
+//   Used for emergency stops, STOP command, and mode transitions.
 // ---------------------------------------------------------------------------
 void ssrAllOff() {
     for (int i = 0; i < SSR_COUNT; i++) {
-        ledcWrite(SSR_PINS[i], 0);
+        s_duty[i] = 0;
+        digitalWrite(SSR_PINS[i], LOW);    // immediate hardware off
     }
 }

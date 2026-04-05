@@ -9,7 +9,7 @@
 // ---------------------------------------------------------------------------
 // Firmware version
 // ---------------------------------------------------------------------------
-#define FW_VERSION  "3.5.0"
+#define FW_VERSION  "3.5.3"
 
 // ---------------------------------------------------------------------------
 // OTA firmware URL
@@ -97,11 +97,21 @@
 #define FLOW2_POLL_MS       2
 
 // ---------------------------------------------------------------------------
-// LEDC / SSR PWM
+// SSR time-proportional control  (software timer – replaces LEDC)
+//
+// The ESP32-S3 LEDC hardware cannot generate 10 Hz at 8-bit resolution:
+// the required divider (~8 000 000) exceeds the 18-bit register max (262 143).
+// Minimum achievable LEDC frequency at 8-bit resolution is ~305 Hz.
+//
+// Instead, an esp_timer fires every SSR_TICK_MS (100 ms).
+// Each cycle of SSR_PERIOD_MS (2 s) = SSR_TICKS_PER_PERIOD (20) ticks.
+// Duty 0–100 % maps to 0–20 ON ticks per period (5 % resolution).
 // ---------------------------------------------------------------------------
-#define SSR_COUNT           5
-#define SSR_LEDC_FREQ_HZ    10    // 10 Hz – safe for SSR zero-crossing on heaters
-#define SSR_LEDC_RESOLUTION 8     // 8-bit → max duty = 255
+#define SSR_COUNT               5
+#define SSR_PERIOD_MS           2000        // full on/off cycle length (ms)
+#define SSR_TICK_MS             100         // timer resolution (ms)
+#define SSR_TICKS_PER_PERIOD    20          // SSR_PERIOD_MS / SSR_TICK_MS
+#define SSR_TICK_US             100000ULL   // SSR_TICK_MS × 1000 (for esp_timer API)
 
 // ---------------------------------------------------------------------------
 // Master Power
