@@ -9,7 +9,7 @@
 // ---------------------------------------------------------------------------
 // Firmware version
 // ---------------------------------------------------------------------------
-#define FW_VERSION  "3.5.6"
+#define FW_VERSION  "3.5.5"
 
 // ---------------------------------------------------------------------------
 // OTA firmware URL
@@ -181,8 +181,6 @@
 // ---------------------------------------------------------------------------
 // Wi-Fi
 // ---------------------------------------------------------------------------
-// #define WIFI_SSID_DEFAULT  "YOUR_SSID"
-// #define WIFI_PASS_DEFAULT  "YOUR_PASSWORD"
 #define WIFI_SSID_DEFAULT        "YOUR_SSID"
 #define WIFI_PASS_DEFAULT        "YOUR_PASSWORD"
 #define WIFI_CONNECT_TIMEOUT_MS  15000
