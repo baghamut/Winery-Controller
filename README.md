@@ -1,253 +1,3 @@
-# Cask & Crown — DistillController
-
-Firmware for the **JC3248W535EN ESP32-S3** board. Controls a distillation or rectification column with a 3.5″ LVGL touch display, an embedded web UI, rule-based valve automation, multi-sensor monitoring, and NVS-backed persistence.
-
----
-
-## Table of Contents
-
-1. [Hardware](#1-hardware)
-2. [Pin Map](#2-pin-map)
-3. [External Expanders](#3-external-expanders)
-4. [Sensor System](#4-sensor-system)
-5. [Process Control](#5-process-control)
-6. [Safety System](#6-safety-system)
-7. [Valve Automation](#7-valve-automation)
-8. [User Interfaces](#8-user-interfaces)
-9. [NVS Persistence](#9-nvs-persistence)
-10. [HTTP API](#10-http-api)
-11. [Command Reference](#11-command-reference)
-12. [Architecture](#12-architecture)
-13. [File Reference](#13-file-reference)
-14. [Building](#14-building)
-
----
-
-## 1. Hardware
-
-| Component | Details |
-|---|---|
-| Board | JC3248W535EN (ESP32-S3, 8 MB Flash, 8 MB PSRAM) |
-| Display | 3.5″ 480×320 IPS, AXS15231B controller, QSPI interface |
-| Touch | AXS15231B I²C touch, integrated on display panel |
-| Temperature | Up to 8 × DS18B20 on single 1-Wire bus |
-| Pressure | Ratiometric 0.5–4.5 V analog sensor on ADC GPIO |
-| Flow | Hall-effect pulse sensor (product line), native GPIO interrupt |
-| Water flow | 2 × hall-effect sensors via PCF8574 polling (expander 2) |
-| Level | Float switch via PCF8574 digital input (expander 1) |
-| Valves | 3 × relay/SSR outputs via PCF8574 (expander 1) |
-| Heaters | 5 × SSR outputs, LEDC 10 Hz PWM |
-
----
-
-## 2. Pin Map
-
-### Connector 1 — 8-pin
-
-| GPIO | Function |
-|---|---|
-| IO5 | SSR1 — Distillation heater A |
-| IO6 | SSR2 — Distillation heater B |
-| IO7 | SSR3 — Distillation heater C |
-| IO15 | SSR4 — Rectification heater A |
-| IO16 | SSR5 — Rectification heater B |
-| IO46 | Product flow sensor (interrupt) |
-| IO9 | Pillar pressure sensor (ADC, 0.5–4.5 V) |
-| IO14 | DS18B20 1-Wire bus |
-
-### Connector 2 — 4-pin (I²C shared bus)
-
-| GPIO | Function |
-|---|---|
-| IO17 | I²C SDA — both PCF8574 expanders |
-| IO18 | I²C SCL — both PCF8574 expanders |
-
-### Display (QSPI)
-
-| GPIO | Function |
-|---|---|
-| IO45 | CS |
-| IO47 | CLK |
-| IO21, IO48, IO40, IO39 | D0–D3 |
-| IO1 | Backlight |
-
-### Touch (I²C, internal to display module)
-
-| GPIO | Function |
-|---|---|
-| IO4 | SDA |
-| IO8 | SCL |
-| IO3 | Interrupt |
-
----
-
-## 3. External Expanders
-
-Both expanders share the Connector 2 I²C bus. A firmware mutex prevents concurrent bus access from sensorsTask, controlTask, and flow2PollTask.
-
-### Expander 1 — PCF8574 at 0x20 (valves + level)
-
-| Bit | Direction | Function |
-|---|---|---|
-| 0 | Input | Kettle level switch (LOW = OK) |
-| 1 | Output | Valve 1 — Dephlegmator |
-| 2 | Output | Valve 2 — Dripper |
-| 3 | Output | Valve 3 — Water |
-| 4–7 | — | Spare |
-
-### Expander 2 — PCF8574 at 0x21 (water flow sensors)
-
-| Bit | Direction | Function |
-|---|---|---|
-| 0 | Input | Water Dephlegmator flow pulses |
-| 1 | Input | Water Condenser flow pulses |
-| 2–7 | — | Spare |
-
-Expander 2 is polled by a dedicated FreeRTOS task (`flow2PollTask`) every 2 ms. Falling edges are counted per bit and accumulated into `g_waterDephlPulses` / `g_waterCondPulses`, which `sensorsUpdate()` harvests every second.
-
----
-
-## 4. Sensor System
-
-### DS18B20 Temperature Sensors (1-Wire, GPIO14)
-
-Up to 8 sensors are supported. Each sensor slot is addressed by its unique 64-bit ROM address, stored in NVS. This eliminates enumeration-order ambiguity when sensors are connected or disconnected.
-
-**Slot assignment (slot index → sensor role):**
-
-| Slot | Name | AppState field |
-|---|---|---|
-| 0 | Room Temp | `roomTemp` |
-| 1 | Kettle Temp | `kettleTemp` |
-| 2 | Pillar Temp 1 | `pillar1Temp` |
-| 3 | Pillar Temp 2 | `pillar2Temp` |
-| 4 | Pillar Temp 3 | `pillar3Temp` |
-| 5 | Dephlegmator Temp | `dephlegmTemp` |
-| 6 | Reflux Condenser Temp | `refluxTemp` |
-| 7 | Product Cooler Temp | `productTemp` |
-
-Unassigned slots (ROM all-zero) return `TEMP_OFFLINE_THRESH` (-20 °C sentinel). All systems treat any value ≤ `TEMP_OFFLINE_THRESH` as "offline" and skip it.
-
-**Sensor Mapper:** ROM addresses are assigned via the web UI Sensor Mapping modal (on the Control screen). Clicking **SCAN BUS** issues a `POST /api/sensor_scan` which re-enumerates the 1-Wire bus and returns detected ROMs. The operator selects the correct ROM for each slot from a dropdown and clicks SET, which sends a `SENSOR:MAP:N:ROMHEX` command.
-
-### Pressure Sensor (GPIO9, ADC)
-
-Ratiometric analog sensor. Firmware applies jitter detection (8-sample rolling window), a hysteresis counter for online/offline transitions, and a low-pass filter (α = 0.2). Reports as `SENSOR_OFFLINE` (-999) until 12 consecutive stable in-range samples are received.
-
-### Level Sensor
-
-Float switch on expander 1 bit 0. LOW = level OK. Reports as `levelHigh` (bool) in AppState.
-
-### Product Flow Sensor (GPIO46)
-
-Hall-effect pulse sensor. Interrupt-driven pulse counting on rising edges. L/min calculated every `FLOW_COMPUTE_INTERVAL_MS` (1000 ms). Accumulated volume stored in `totalVolumeLiters`. Reports as `SENSOR_OFFLINE` until at least one non-zero reading.
-
-### Water Flow Sensors (Expander 2)
-
-Two hall-effect sensors polled via PCF8574 at 0x21. Same pulse-per-litre calibration constant as the product flow sensor (`FLOW_PULSES_PER_LITRE = 450`). Reports as `SENSOR_OFFLINE` until first non-zero reading. Fields: `waterDephlLpm`, `waterCondLpm`.
-
----
-
-## 5. Process Control
-
-### Modes
-
-| Mode | SSRs active | Label |
-|---|---|---|
-| 0 (Off) | None | — |
-| 1 | SSR1, SSR2, SSR3 | Distillation |
-| 2 | SSR4, SSR5 | Rectification |
-
-### Master Power
-
-A single `masterPower` value (0–100 %) drives all active SSRs simultaneously at the same LEDC duty cycle (10 Hz, 8-bit). There are no per-SSR controls. Setting `masterPower = 0` while running turns heaters off without stopping the process.
-
-### Starting a Run
-
-START is accepted only when:
-- `processMode` is 1 or 2
-- `masterPower > 0`
-- `safetyTripped` is false
-
-### Stopping
-
-STOP resets `isRunning`, `processMode`, and `masterPower` to 0, clears the safety latch, and records `kettleTemp` as `lastTankTempC` for auto-restore.
-
-### Power-Glitch Auto-Restore
-
-On boot, after sensors warm up (1.2 s delay), the firmware checks:
-
-1. `wasRunning` was true at last save
-2. `processMode ≠ 0`
-3. `safetyTripped` is false
-4. `masterPower > 0`
-5. If both the saved kettle temperature (`lastTankC`) and the current kettle reading are valid, the drop between them must not exceed `AUTO_RESTORE_MAX_TEMP_DROP_C` (5 °C). If either reading is unavailable the temperature check is skipped and the process resumes — `controlTask` safety will catch real over-temperature once sensors come online.
-
-If all conditions pass, the process resumes automatically — recovering from short power blips without operator intervention.
-
----
-
-## 6. Safety System
-
-`controlSafetyCheck()` runs every `CONTROL_LOOP_MS` (500 ms) while the process is running.
-
-### Per-sensor danger check
-
-Core sensors (Room, Kettle, Pillar 1) are checked against their individual `tempDanger[]` thresholds from the active mode's `SensorThresholds`. Extended sensors (Pillar 2/3, Dephlegmator, Reflux, Product Cooler) are checked against the global `safetyTempMaxC` ceiling.
-
-### Pressure danger check
-
-`pressureBar` is checked against `pressDanger` from the active threshold set. Offline pressure (≤ SENSOR_OFFLINE + 1) is skipped.
-
-### Global temperature backstop
-
-All online temperature sensors are compared against `safetyTempMaxC` regardless of per-sensor settings.
-
-### Trip behaviour
-
-On trip: `safetyTripped = true`, human-readable `safetyMessage` set, `isRunning = false`, `masterPower = 0`, all SSRs cut immediately. Valve evaluation continues (valves are not force-closed on trip — their rules remain active).
-
-Safety is cleared by sending `MODE:0` (returns to idle).
-
-### Configurable thresholds
-
-Per-sensor warn/danger temperatures and pressure warn/danger values are stored in `threshDist` / `threshRect` inside AppState, persisted in NVS, and editable from both UIs. Default values are set in `config.h`.
-
----
-
-## 7. Valve Automation
-
-Five valves are supported:
-
-| Index | Name | Hardware |
-|---|---|---|
-| 0 | Dephlegmator | Expander 1 bit 1 |
-| 1 | Dripper | Expander 1 bit 2 |
-| 2 | Water | Expander 1 bit 3 |
-| 3 | Placeholder 1 | (no hardware yet) |
-| 4 | Placeholder 2 | (no hardware yet) |
-
-### Rule Model
-
-Each valve has one **open condition** and one **close condition**. A condition specifies:
-
-- **Sensor** — selected from the sensor catalog by stable ID
-- **Operator** — `>`, `<`, `>=`, `<=`, `==`, or `--` (disabled)
-- **Value** — float threshold
-
-Using separate open and close thresholds creates a natural deadband, preventing chattering when a sensor reading oscillates near a single trip point.
-
-**Example rules:**
-```
-Valve 0 (Dephlegmator):
-  Open when:  Kettle Temp  >  78.5 °C
-  Close when: Kettle Temp  <  77.0 °C
-
-Valve 2 (Water):
-  Open when:  Pillar Pressure  >  0.06 bar
-  Close when: Pillar Pressure  <  0.04 bar
-```
-
 ### Evaluation
 
 `valveEvaluateAll()` runs every 500 ms regardless of `isRunning` or `processMode`. Offline sensors never trigger conditions. Close takes priority over open if both conditions fire simultaneously.
@@ -361,10 +111,9 @@ All persistent data is stored under the `"distill"` NVS namespace.
 | `POST` | `/ota` | Trigger HTTPS OTA from `OTA_FIRMWARE_URL` |
 
 ### `/state` JSON fields (selected)
-
 ```json
 {
-  "fw": "3.5.0",
+  "fw": "3.5.2",
   "isRunning": false,
   "processMode": 1,
   "masterPower": 65.0,
@@ -458,7 +207,6 @@ All commands are plain UTF-8 strings sent via `POST /` with the string in the `p
 ### Shared State
 
 `AppState g_state` is the single source of truth. All tasks access it under `stateLock()` / `stateUnlock()` (FreeRTOS mutex). The recommended pattern is snapshot-then-release:
-
 ```cpp
 stateLock();
 AppState snap = g_state;
@@ -486,7 +234,7 @@ The I²C bus (IO17/IO18) is shared by expander 1 (0x20), expander 2 (0x21), and 
 | `state.h` / `state.cpp` | `AppState`, mutex helpers, NVS load/save, sensor catalog |
 | `sensors.h` / `sensors.cpp` | DS18B20 (ROM-addressed), pressure, flow, level drivers |
 | `expander.h` / `expander.cpp` | PCF8574 drivers (both expanders), Wire mutex, flow2PollTask |
-| `ssr.h` / `ssr.cpp` | LEDC PWM driver for 5 SSR outputs |
+| `ssr.h` / `ssr.cpp` | Software time-proportional SSR driver (esp_timer, 5 outputs) |
 | `control.h` / `control.cpp` | Safety check, SSR apply, valve evaluation, command parser |
 | `http_server.h` / `http_server.cpp` | WebServer routes, `/state` serialiser, `/api/sensor_scan` |
 | `web_ui.h` / `web_ui.cpp` | Embedded HTML/JS web UI |
@@ -500,7 +248,7 @@ The I²C bus (IO17/IO18) is shared by expander 1 (0x20), expander 2 (0x21), and 
 ### Requirements
 
 - Arduino IDE 2.x or arduino-cli
-- ESP32 Arduino core **v3.x** (uses pin-based LEDC API: `ledcAttach` / `ledcWrite`)
+- ESP32 Arduino core **v3.x**
 - Libraries:
   - `LVGL` v9
   - `Arduino_GFX_Library`
