@@ -1133,7 +1133,7 @@ void uiRefreshFromState()
         for (int i = 0; i < 3; i++) {
             char buf[48];
             if (i == 0) {
-                snprintf(buf, sizeof(buf), "%s: %.1f kPa", smaxLabels[0], thr.pressDanger * BAR_TO_KPA);
+                snprintf(buf, sizeof(buf), "%s: %.3f kPa", smaxLabels[0], thr.pressDanger * BAR_TO_KPA);
             } else {
                 float val = thr.tempDanger[i];
                 snprintf(buf, sizeof(buf), "%s: %.1f%s", smaxLabels[i], val, STR_UNIT_DEGC);
@@ -1237,15 +1237,15 @@ void uiRefreshFromState()
             lv_obj_remove_state(mon_pLbl, LV_STATE_USER_2);
             lv_obj_add_state(mon_pLbl,    LV_STATE_USER_1);
         } else if (s.pressureBar >= thr.pressDanger) {
-            snprintf(b, sizeof(b), "%.1f kPa", s.pressureBar * BAR_TO_KPA);
+            snprintf(b, sizeof(b), "%.3f kPa", s.pressureBar * BAR_TO_KPA);
             lv_obj_remove_state(mon_pLbl, LV_STATE_USER_2);
             lv_obj_add_state(mon_pLbl,    LV_STATE_USER_1);
         } else if (s.pressureBar >= thr.pressWarn) {
-            snprintf(b, sizeof(b), "%.1f kPa", s.pressureBar * BAR_TO_KPA);
+            snprintf(b, sizeof(b), "%.3f kPa", s.pressureBar * BAR_TO_KPA);
             lv_obj_remove_state(mon_pLbl, LV_STATE_USER_1);
             lv_obj_add_state(mon_pLbl,    LV_STATE_USER_2);
         } else {
-            snprintf(b, sizeof(b), "%.1f kPa", s.pressureBar * BAR_TO_KPA);
+            snprintf(b, sizeof(b), "%.3f kPa", s.pressureBar * BAR_TO_KPA);
             lv_obj_remove_state(mon_pLbl, LV_STATE_USER_1);
             lv_obj_remove_state(mon_pLbl, LV_STATE_USER_2);
         }

@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Cask & Crown Winery Controller</title>
   <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico">
   <style>
     @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap');
     body { font-family: Inter, system-ui, sans-serif; }
@@ -20,22 +21,13 @@
 
     <div class="flex items-center justify-between mb-8 bg-[#202020] border border-[#333] rounded-2xl px-6 py-4">
       <div class="flex items-center gap-3">
-        <div class="w-9 h-9 rounded-xl flex items-center justify-center bg-orange-500/15 border border-orange-400/30 text-orange-400">
-          <svg viewBox="0 0 24 24" class="w-6 h-6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <path d="M7 5.5c1.6-.8 3.3-1.2 5-1.2s3.4.4 5 1.2"/>
-            <path d="M7 18.5c1.6.8 3.3 1.2 5 1.2s3.4-.4 5-1.2"/>
-            <path d="M7 5.5c-1.2 1.7-1.8 4-1.8 6.5S5.8 16.8 7 18.5"/>
-            <path d="M17 5.5c1.2 1.7 1.8 4 1.8 6.5s-.6 4.8-1.8 6.5"/>
-            <path d="M9 4.9c-.9 1.8-1.4 4.3-1.4 7.1s.5 5.3 1.4 7.1"/>
-            <path d="M15 4.9c.9 1.8 1.4 4.3 1.4 7.1s-.5 5.3-1.4 7.1"/>
-            <path d="M8 8h8"/>
-            <path d="M7.4 12h9.2"/>
-            <path d="M8 16h8"/>
-          </svg>
-        </div>
+        <!-- ★ Header image – adjust width/height (px) to find best size -->
+        <img src="/Barrel_Big.png"
+             style="width:96px; height:96px; object-fit:contain; display:block; flex-shrink:0;"
+             alt="">
         <div>
-          <h1 id="app-title" class="text-2xl font-semibold tracking-tight">Cask &amp; Crown</h1>
-          <p class="text-xs text-gray-400 -mt-1"><span id="app-subtitle">Winery Controller</span> • FW <span id="fw">1.0.0</span></p>
+          <h1 id="app-title" class="text-2xl font-semibold tracking-tight">       Cask &amp; Crown</h1>
+          <p class="text-xs text-gray-400 -mt-1"><span id="app-subtitle">       Winery Controller</span> • FW <span id="fw">1.0.0</span></p>
         </div>
       </div>
       <div class="flex items-center gap-8 text-sm">
@@ -531,7 +523,8 @@
       } else {
         const pCls = currentState.pressureBar >= thr.pressDanger ? 'sensor-danger'
                    : currentState.pressureBar >= thr.pressWarn   ? 'sensor-warn' : '';
-        rows.push(row(str('labelPressure', 'Pressure'), `${(currentState.pressureBar * 100).toFixed(1)} ${unitBar}`, pCls));
+        // ★ 3 decimal places for pressure
+        rows.push(row(str('labelPressure', 'Pressure'), `${(currentState.pressureBar * 100).toFixed(3)} ${unitBar}`, pCls));
       }
 
       const lvlOk = currentState.levelHigh;

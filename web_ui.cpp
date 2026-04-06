@@ -45,6 +45,29 @@ static void handleRoot(WebServer& server)
 void webUiRegisterHandlers(WebServer& server)
 {
     server.on("/", HTTP_GET, [&server]() { handleRoot(server); });
+
+    server.on("/Barrel_Big.png", HTTP_GET, [&server]() {
+            File f = LittleFS.open("/Barrel_Big.png", "r");
+            if (f) {
+                server.sendHeader("Cache-Control", "max-age=86400");
+                server.streamFile(f, "image/png");
+                f.close();
+            } else {
+                server.send(404, "text/plain", "Not found");
+            }
+        });
+
+        server.on("/favicon.ico", HTTP_GET, [&server]() {
+            File f = LittleFS.open("/favicon.ico", "r");
+            if (f) {
+                server.sendHeader("Cache-Control", "max-age=86400");
+                server.streamFile(f, "image/x-icon");
+                f.close();
+            } else {
+                server.send(404, "text/plain", "Not found");
+            }
+        });
+
     Serial.printf("[WebUI] Handler registered – UI served from %s\n", UI_PATH);
 }
 
