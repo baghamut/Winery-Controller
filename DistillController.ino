@@ -14,6 +14,7 @@
 //    4. Display init
 //    5. Touch init
 //    6. LVGL v9 init
+//    6a. lvglFsInit()     – register 'L:' LittleFS driver for barrel.png
 //    7. uiInit()          – build all LVGL panels
 //    8. wifiConnect()     – connect + trigger webUiStartFetchTask()
 //    9. sensorsTask       – Core 0, priority 2
@@ -100,10 +101,6 @@ static TaskHandle_t h_flow2   = nullptr;
 static TaskHandle_t h_sensors = nullptr;
 static TaskHandle_t h_control = nullptr;
 static TaskHandle_t h_lvgl    = nullptr;
-
-// Command queue – LVGL callbacks post here; loop() drains and calls handleCommand().
-// 128 bytes per slot covers the longest possible command (WIFI:SET with encoded creds).
-QueueHandle_t g_cmdQueue = nullptr;
 
 // ===========================================================================
 //  Forward declarations
@@ -283,6 +280,71 @@ static void lvglTask(void* pvParams)
 
 
 // ===========================================================================
+//  postCommand
+//   Called from ui_lvgl.cpp (LVGL task, Core 1) to dispatch commands.
+//   Wraps handleCommand() so LVGL widgets don't need to include control.h
+//   directly.  The String constructor call is safe here – LVGL task stack
+//   is 8 KB which is sufficient.
+// ===========================================================================
+void postCommand(const char* cmd)
+{
+    handleCommand(String(cmd));
+}
+
+
+// ===========================================================================
+//  lvglFsInit
+//   Registers a LVGL v9 filesystem driver under letter 'L' backed by
+//   LittleFS.  Must be called after lv_init() and before uiInit() so that
+//   lv_image_set_src("L:/barrel.png") resolves correctly when buildModePanel()
+//   runs.
+//
+//   No separate .h/.cpp files needed – lambdas capture the LittleFS handle
+//   via the global Arduino LittleFS object.
+// ===========================================================================
+static void lvglFsInit()
+{
+    static lv_fs_drv_t drv;
+    lv_fs_drv_init(&drv);
+    drv.letter = 'L';
+
+    drv.open_cb = [](lv_fs_drv_t*, const char* path, lv_fs_mode_t mode) -> void* {
+        File* fp = new File(LittleFS.open(path, mode == LV_FS_MODE_WR ? "w" : "r"));
+        if (!*fp) { delete fp; return nullptr; }
+        return fp;
+    };
+
+    drv.close_cb = [](lv_fs_drv_t*, void* f) -> lv_fs_res_t {
+        ((File*)f)->close();
+        delete (File*)f;
+        return LV_FS_RES_OK;
+    };
+
+    drv.read_cb = [](lv_fs_drv_t*, void* f,
+                     void* buf, uint32_t btr, uint32_t* br) -> lv_fs_res_t {
+        *br = ((File*)f)->read((uint8_t*)buf, btr);
+        return LV_FS_RES_OK;
+    };
+
+    drv.seek_cb = [](lv_fs_drv_t*, void* f,
+                     uint32_t pos, lv_fs_whence_t w) -> lv_fs_res_t {
+        SeekMode m = (w == LV_FS_SEEK_CUR) ? SeekCur :
+                     (w == LV_FS_SEEK_END) ? SeekEnd : SeekSet;
+        ((File*)f)->seek(pos, m);
+        return LV_FS_RES_OK;
+    };
+
+    drv.tell_cb = [](lv_fs_drv_t*, void* f, uint32_t* pos) -> lv_fs_res_t {
+        *pos = ((File*)f)->position();
+        return LV_FS_RES_OK;
+    };
+
+    lv_fs_drv_register(&drv);
+    Serial.println("[LVGL-FS] LittleFS driver registered as 'L:'");
+}
+
+
+// ===========================================================================
 //  wifiConnect
 //   Load credentials from NVS, connect, update g_state IP/SSID,
 //   and trigger the web UI fetch task (no-op in embedded mode).
@@ -317,22 +379,6 @@ void wifiConnect()
 }
 
 
-void postCommand(const char* cmd)
-{
-    if (!g_cmdQueue) {
-        // Queue not yet created (called during setup) – execute directly
-        handleCommand(String(cmd));
-        return;
-    }
-    char buf[128];
-    strncpy(buf, cmd, sizeof(buf) - 1);
-    buf[sizeof(buf) - 1] = '\0';
-    if (xQueueSend(g_cmdQueue, buf, 0) != pdTRUE) {
-        // Queue full – shouldn't happen with 8 slots, log and drop
-        Serial.printf("[CMD] postCommand queue full, dropped: %s\n", buf);
-    }
-}
-
 // ===========================================================================
 //  setup()
 // ===========================================================================
@@ -365,12 +411,10 @@ void setup()
     //    stateInit() loads all persisted values (processMode, masterPower,
     //    wasRunning, lastTankTempC, thresholds, etc.) from NVS.
     stateInit();
-    // Command queue – must exist before lvglTask or any LVGL callback fires
-    g_cmdQueue = xQueueCreate(8, 128);
     prefs.begin(NVS_NAMESPACE, false);
     prefs.end();
 
-    // 2. LittleFS (for barrel image and any cached assets)
+    // 2. LittleFS (web UI HTML + barrel.png served at runtime)
     if (!LittleFS.begin(true)) {
         Serial.println("[LittleFS] Mount failed");
     } else {
@@ -423,6 +467,10 @@ void setup()
     lv_indev_set_type(lv_touch, LV_INDEV_TYPE_POINTER);
     lv_indev_set_read_cb(lv_touch, lvgl_touch_cb);
     Serial.println("[LVGL] v9 init OK");
+
+    // 6a. LittleFS filesystem driver for LVGL image loading ("L:/barrel.png")
+    //     Must be registered after lv_init() and before uiInit().
+    lvglFsInit();
 
     // =========================================================================
     // TENTATIVE AUTO-RESTORE  (NVS data only, no sensor validation)
@@ -562,21 +610,14 @@ static uint32_t s_lastDiag     = 0;    // periodic diagnostic log interval
 
 void loop()
 {
-// Deferred WiFi reconnect – triggered by WIFI:SET command from either UI.
+    // Deferred WiFi reconnect – triggered by WIFI:SET command from either UI.
+    // Runs here so the LVGL task never blocks waiting for a WiFi association.
     if (s_wifiReconnectPending) {
         s_wifiReconnectPending = false;
         WiFi.disconnect(true, true);
         delay(100);
         Serial.println("[WiFi] Reconnecting with new config...");
         wifiConnect();
-    }
-
-    // Drain LVGL-deferred commands (NVS writes must not run inside lvglTask)
-    {
-        char buf[128];
-        while (xQueueReceive(g_cmdQueue, buf, 0) == pdTRUE) {
-            handleCommand(String(buf));
-        }
     }
 
     // Process any pending HTTP client requests

@@ -37,12 +37,22 @@ static int     s_scannedCount = 0;
 volatile uint32_t g_flowPulses = 0;
 static uint32_t   lastFlowMillis = 0;
 
+// Spinlock for g_flowPulses.
+// flowISR fires on Core 1 (attachInterrupt called from setup() on Core 1).
+// sensorsUpdate reads+resets on Core 0.  noInterrupts() only masks the
+// local core — use a portMUX spinlock so both cores are covered.
+static portMUX_TYPE s_flowMux = portMUX_INITIALIZER_UNLOCKED;
+
 // Spinlock protecting g_waterDephlPulses / g_waterCondPulses.
 // These are incremented by flow2PollTask (a FreeRTOS task, not a hardware ISR),
 // so the ESP32 portMUX-based critical section is required — not noInterrupts().
 portMUX_TYPE g_waterFlowMux = portMUX_INITIALIZER_UNLOCKED;
 
-void IRAM_ATTR flowISR() { g_flowPulses = g_flowPulses + 1; }
+void IRAM_ATTR flowISR() {
+    portENTER_CRITICAL_ISR(&s_flowMux);
+    g_flowPulses++;
+    portEXIT_CRITICAL_ISR(&s_flowMux);
+}
 
 // ---------------------------------------------------------------------------
 // Pressure filtering (unchanged from original)
@@ -250,8 +260,11 @@ void sensorsUpdate() {
     uint32_t now = millis();
     uint32_t dt  = now - lastFlowMillis;
     if (dt >= FLOW_COMPUTE_INTERVAL_MS) {
-        uint32_t pulses;
-        noInterrupts(); pulses = g_flowPulses; g_flowPulses = 0; interrupts();
+    uint32_t pulses;
+    taskENTER_CRITICAL(&s_flowMux);
+    pulses = g_flowPulses;
+    g_flowPulses = 0;
+    taskEXIT_CRITICAL(&s_flowMux);
 
         float litres = pulses / FLOW_PULSES_PER_LITRE;
         float lpm    = (dt > 0) ? litres * 60000.0f / dt : 0.0f;
@@ -311,7 +324,9 @@ void sensorsTask(void* pvParams) {
 // flowResetTotal
 // ---------------------------------------------------------------------------
 void flowResetTotal() {
-    noInterrupts(); g_flowPulses = 0; interrupts();
+    taskENTER_CRITICAL(&s_flowMux);
+    g_flowPulses = 0;
+    taskEXIT_CRITICAL(&s_flowMux);
     stateLock();
     g_state.totalVolumeLiters = 0.0f;
     stateUnlock();

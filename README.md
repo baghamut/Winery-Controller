@@ -237,9 +237,10 @@ The I²C bus (IO17/IO18) is shared by expander 1 (0x20), expander 2 (0x21), and 
 | `ssr.h` / `ssr.cpp` | Software time-proportional SSR driver (esp_timer, 5 outputs) |
 | `control.h` / `control.cpp` | Safety check, SSR apply, valve evaluation, command parser |
 | `http_server.h` / `http_server.cpp` | WebServer routes, `/state` serialiser, `/api/sensor_scan` |
-| `web_ui.h` / `web_ui.cpp` | Embedded HTML/JS web UI |
+| `web_ui.h` / `web_ui.cpp` | Embedded HTML/JS Minimal web UI |
 | `ui_lvgl.h` / `ui_lvgl.cpp` | LVGL panel layout, widget updates, screen transitions |
-| `img_barrel.c` | Barrel graphic asset (LVGL image descriptor) |
+| `data/web_ui.html`          | Web UI — served from LittleFS at runtime     |
+| `data/barrel.png`           | Barrel graphic — loaded by LVGL lodepng at runtime |
 
 ---
 
@@ -278,6 +279,23 @@ The I²C bus (IO17/IO18) is shared by expander 1 (0x20), expander 2 (0x21), and 
 4. Go to **Control → Sensors**, click **SCAN BUS** and assign DS18B20 ROM addresses to sensor slots.
 5. Go to **Control → Valves Control** and configure open/close rules for each valve.
 6. Select a process mode, set Master Power, and press START.
+
+### Uploading the Filesystem Image
+
+The LittleFS image contains `web_ui.html` and `barrel.png`. Flash it once
+after firmware, and again whenever either file changes — no firmware reflash
+needed.
+
+**Arduino IDE 2.x**
+Install the *LittleFS Upload* plugin, then use **Sketch → Upload Sketch Data**.
+
+**arduino-cli / mklittlefs**
+```bash
+mklittlefs -c data/ -b 4096 -p 256 -s 0x180000 littlefs.bin
+esptool.py --chip esp32s3 --port /dev/ttyUSB0 --baud 921600 \
+           write_flash 0x670000 littlefs.bin
+```
+Partition offset `0x670000` and size `0x180000` match `partitions.csv`.
 
 ### OTA Update
 

@@ -18,10 +18,14 @@
 #include "ui_strings.h"
 #include <lvgl.h>
 
-extern const lv_img_dsc_t img_barrel;
-
 static constexpr float BAR_TO_KPA = 100.0f;
 static constexpr float KPA_TO_BAR = 0.01f;
+
+// ---------------------------------------------------------------------------
+// SEL – cast LV_PART_x | LV_STATE_x to lv_style_selector_t to silence the
+// deprecated enum-enum bitwise conversion warning introduced in LVGL v9.
+// ---------------------------------------------------------------------------
+#define SEL(part, state) ((lv_style_selector_t)((uint32_t)(part) | (uint32_t)(state)))
 
 extern "C" void        wifiApplyConfig(const char* ssid, const char* pass);
 extern "C" const char* wifiGetSsid();
@@ -334,8 +338,8 @@ static void buildHeader()
         snprintf(buf, sizeof(buf), "%s: --", STR_SENSOR_NAME1);
         lv_label_set_text(hdr_t1, buf);
     }
-    lv_obj_set_style_text_color(hdr_t1, CLR_GREEN,  LV_PART_MAIN | LV_STATE_DEFAULT);
-    lv_obj_set_style_text_color(hdr_t1, CLR_DANGER, LV_PART_MAIN | LV_STATE_USER_1);
+    lv_obj_set_style_text_color(hdr_t1, CLR_GREEN,  SEL(LV_PART_MAIN, LV_STATE_DEFAULT));
+    lv_obj_set_style_text_color(hdr_t1, CLR_DANGER, SEL(LV_PART_MAIN, LV_STATE_USER_1));
     lv_obj_add_state(hdr_t1, LV_STATE_USER_1);   // boot: sensor offline
     lv_obj_set_style_text_font(hdr_t1, &lv_font_montserrat_14, 0);
     lv_obj_set_width(hdr_t1, LV_SIZE_CONTENT);
@@ -413,8 +417,9 @@ static void buildModePanel()
     lv_obj_center(app_title);
 
     lv_obj_t* icon_left = lv_image_create(top_card);
-    lv_image_set_src(icon_left, &img_barrel);
-    lv_obj_align_to(icon_left, app_title, LV_ALIGN_OUT_LEFT_MID, -16, 0);
+    lv_image_set_src(icon_left, "L:/barrel.png");
+    lv_obj_set_size(icon_left, 96, 96);          // display size, independent of PNG size
+    lv_obj_align(icon_left, LV_ALIGN_LEFT_MID, 16, 2);
 
     // Bottom card: mode selection buttons
     lv_obj_t* card = makeCard(pnl_mode, 8, bot_card_y, CARD_OUTER_W, bot_card_h);
@@ -519,7 +524,7 @@ static void buildTmaxPanel()
     lv_obj_set_style_text_color(tmax_ta,   CLR_TEXT, 0);
     lv_obj_set_style_border_width(tmax_ta, 1, 0);
     lv_obj_set_style_border_color(tmax_ta, CLR_ACCENT,
-                                  LV_PART_MAIN | LV_STATE_FOCUSED);
+                                  SEL(LV_PART_MAIN, LV_STATE_FOCUSED));
     lv_obj_add_event_cb(tmax_ta, [](lv_event_t* e) {
         if (tmax_kb) lv_keyboard_set_textarea(tmax_kb, tmax_ta);
     }, LV_EVENT_FOCUSED, nullptr);
@@ -672,7 +677,7 @@ static void buildControlPanel()
     lv_obj_set_style_bg_opa(ctrl_masterSlider, LV_OPA_50, LV_PART_MAIN);
     lv_obj_set_style_bg_color(ctrl_masterSlider,
                               CLR_ACCENT,
-                              LV_PART_INDICATOR | LV_STATE_DEFAULT);
+                              SEL(LV_PART_INDICATOR, LV_STATE_DEFAULT));
 
     ctrl_masterPct = lv_label_create(pwrRow);
     lv_label_set_text(ctrl_masterPct, "0%");
@@ -803,26 +808,11 @@ static void buildMonitorPanel()
     lv_obj_set_style_text_font(titleLbl,  &lv_font_montserrat_16_bold, 0);
     lv_obj_set_pos(titleLbl, 0, 0);
 
-    // -----------------------------------------------------------------------
-    // Layout: two columns, 7 rows each at 18 px/row.
-    //
-    //  Card inner width = 448 px; gap between columns = 8 px.
-    //  Column width = (448 - 8) / 2 = 220 px  (unchanged – preserves readability)
-    //
-    //  Available height for rows: MON_ROW_Y0 (24) to LOAD_ROW_Y (160) = 136 px.
-    //  At 18 px/row: 7 rows × 18 px = 126 px ≤ 136 px ✓
-    //
-    //  LEFT  column: temperature sensors (core 3 always visible, extended 4 shown
-    //                                      even when offline to keep layout stable)
-    //  RIGHT column: pressure, level, flow sensors (core always visible,
-    //                                                extended when assigned)
-    //  Total volume: moved to header bar.
-    // -----------------------------------------------------------------------
     const lv_coord_t COL_GAP  = 8;
     const lv_coord_t COL_W    = (CARD_INNER_W - COL_GAP) / 2;  // 220 px
     const lv_coord_t COL_R_X  = COL_W + COL_GAP;
 
-    // Helper: label name/value row – same styling as before, 18 px tall.
+    // Helper: label name/value row – 18 px tall.
     auto makeColRow = [&](lv_coord_t x, lv_coord_t y, lv_coord_t w,
                           const char* name, lv_obj_t** outLbl)
     {
@@ -845,10 +835,10 @@ static void buildMonitorPanel()
 
         lv_obj_t* l2 = lv_label_create(row);
         lv_label_set_text(l2, "--");
-        lv_obj_set_style_text_color(l2, CLR_TEXT,               LV_PART_MAIN | LV_STATE_DEFAULT);
-        lv_obj_set_style_text_color(l2, CLR_DANGER,             LV_PART_MAIN | LV_STATE_USER_1);
-        lv_obj_set_style_text_color(l2, lv_color_hex(0xFF7A1A), LV_PART_MAIN | LV_STATE_USER_2);
-        lv_obj_set_style_text_font(l2,  &lv_font_montserrat_16, 0);  // 16 vs 18 saves ~2px height
+        lv_obj_set_style_text_color(l2, CLR_TEXT,               SEL(LV_PART_MAIN, LV_STATE_DEFAULT));
+        lv_obj_set_style_text_color(l2, CLR_DANGER,             SEL(LV_PART_MAIN, LV_STATE_USER_1));
+        lv_obj_set_style_text_color(l2, lv_color_hex(0xFF7A1A), SEL(LV_PART_MAIN, LV_STATE_USER_2));
+        lv_obj_set_style_text_font(l2,  &lv_font_montserrat_16, 0);
         lv_obj_align(l2, LV_ALIGN_RIGHT_MID, -4, 0);
         *outLbl = l2;
     };
@@ -863,7 +853,7 @@ static void buildMonitorPanel()
     makeColRow(0, ly, COL_W, STR_SENSOR_NAME6,  &mon_dephlegmLbl); ly += MON_ROW_DY;
     makeColRow(0, ly, COL_W, STR_SENSOR_NAME7,  &mon_refluxLbl);
 
-    // RIGHT COLUMN – pressure / level / flow (rows 0–5, row 6 spare)
+    // RIGHT COLUMN – pressure / level / flow (rows 0–5)
     lv_coord_t ry = MON_ROW_Y0;
     makeColRow(COL_R_X, ry, COL_W, STR_MON_PRESSURE,      &mon_pLbl);          ry += MON_ROW_DY;
     makeColRow(COL_R_X, ry, COL_W, STR_MON_LEVEL,         &mon_levelLbl);      ry += MON_ROW_DY;
@@ -874,18 +864,6 @@ static void buildMonitorPanel()
 
     // -----------------------------------------------------------------------
     // MASTER POWER ROW  (full-width, between sensor grid and STOP button)
-    //
-    //  This is the SAME control as the Control panel Master Power slider.
-    //  It sends "MASTER:NN" via cbMasterSlider, so the operator can adjust
-    //  power without leaving the Monitor screen.
-    //
-    //  Positioned at:  y = MON_STOP_Y - (CTRL_ROW_H+6) - 4
-    //                      = 206 - 42 - 4 = 160
-    //  Height:  CTRL_ROW_H + 6 = 42  (matches the Control panel row)
-    //  Width:   full card inner width (CARD_INNER_W)
-    //
-    //  Layout:  ["Master Power" label] [slider] ["XX%" label]
-    //           All geometry shared with Control via MASTER_* constants.
     // -----------------------------------------------------------------------
     const lv_coord_t LOAD_ROW_H = CTRL_ROW_H + 6;                // 42 px
     const lv_coord_t LOAD_ROW_Y = MON_STOP_Y - LOAD_ROW_H - 4;   // 160 px
@@ -902,14 +880,12 @@ static void buildMonitorPanel()
     lv_obj_set_style_shadow_width(load_Row,  0, 0);
     lv_obj_clear_flag(load_Row, LV_OBJ_FLAG_SCROLLABLE);
 
-    // "Master Power" label on the left – accent colour, same as Control panel
     lv_obj_t* loadNameLbl = lv_label_create(load_Row);
     lv_label_set_text(loadNameLbl, STR_MASTER_POWER_LABEL);
     lv_obj_set_style_text_color(loadNameLbl, CLR_ACCENT, 0);
     lv_obj_set_style_text_font(loadNameLbl,  &lv_font_montserrat_14, 0);
     lv_obj_align(loadNameLbl, LV_ALIGN_LEFT_MID, MASTER_LBL_X, 0);
 
-    // Slider – geometry locked to Control panel via MASTER_* constants
     mon_loadSlider = lv_slider_create(load_Row);
     lv_slider_set_range(mon_loadSlider, 0, 100);
     lv_slider_set_value(mon_loadSlider, 0, LV_ANIM_OFF);
@@ -921,11 +897,10 @@ static void buildMonitorPanel()
     lv_obj_set_style_bg_opa(mon_loadSlider,   LV_OPA_50,  LV_PART_MAIN);
     lv_obj_set_style_bg_color(mon_loadSlider,
                               CLR_ACCENT,
-                              LV_PART_INDICATOR | LV_STATE_DEFAULT);
-    lv_obj_add_event_cb(mon_loadSlider, cbMasterSlider, LV_EVENT_VALUE_CHANGED, nullptr);
-    lv_obj_add_event_cb(mon_loadSlider, cbMasterSliderReleased, LV_EVENT_RELEASED, nullptr);
+                              SEL(LV_PART_INDICATOR, LV_STATE_DEFAULT));
+    lv_obj_add_event_cb(mon_loadSlider, cbMasterSlider,         LV_EVENT_VALUE_CHANGED, nullptr);
+    lv_obj_add_event_cb(mon_loadSlider, cbMasterSliderReleased, LV_EVENT_RELEASED,      nullptr);
 
-    // Percentage label – same offset as Control: slider_x + slider_w + gap
     mon_loadPct = lv_label_create(load_Row);
     lv_label_set_text(mon_loadPct, "0%");
     lv_obj_set_style_text_color(mon_loadPct, CLR_MUTED, 0);
@@ -945,16 +920,12 @@ static void buildMonitorPanel()
 
 // ===========================================================================
 // URL encoding helper  (used by cbWifiSave)
-//   Percent-encodes any character that is not unreserved per RFC 3986.
-//   Required because the WIFI:SET:ssid:pass command uses ':' as a delimiter;
-//   a raw colon in the SSID or password would corrupt the parse in control.cpp.
-//   control.cpp::urlDecodeString() decodes the result on the other end.
 // ===========================================================================
 static String urlEncode(const char* src)
 {
     if (!src) return String();
     String out;
-    out.reserve(strlen(src) * 3);   // worst-case: every byte encoded
+    out.reserve(strlen(src) * 3);
     for (const char* p = src; *p; ++p) {
         char c = *p;
         if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
@@ -972,16 +943,10 @@ static String urlEncode(const char* src)
 
 // ===========================================================================
 // WIFI PANEL  (Overlay)
-//   Shown when the IP label in the header is tapped.
-//   Two text areas (SSID / password) + BACK + SAVE.
 // ===========================================================================
 static void cbWifiBack(lv_event_t*)  { uiShowMainFromWifi(); }
 static void cbWifiSave(lv_event_t*)
 {
-    // Read both text areas, percent-encode each field, then send WIFI:SET.
-    // Encoding is required because ':' is the command delimiter; a raw colon
-    // in the SSID or password would cause control.cpp to split at the wrong
-    // position.  control.cpp::urlDecodeString() decodes both fields.
     const char* s = wifi_ssid_ta ? lv_textarea_get_text(wifi_ssid_ta) : "";
     const char* p = wifi_pass_ta ? lv_textarea_get_text(wifi_pass_ta) : "";
     handleCommand("WIFI:SET:" + urlEncode(s) + ":" + urlEncode(p));
@@ -990,7 +955,6 @@ static void cbWifiSave(lv_event_t*)
 
 static void cbWifiTaFocus(lv_event_t* e)
 {
-    // When a text area gains focus, attach the shared keyboard to it
     lv_obj_t* ta = (lv_obj_t*)lv_event_get_target(e);
     if (wifi_kb) lv_keyboard_set_textarea(wifi_kb, ta);
 }
@@ -1004,7 +968,7 @@ static void buildWifiPanel()
     lv_obj_set_style_bg_opa(pnl_wifi, LV_OPA_COVER, 0);
     resetPanelStyle(pnl_wifi);
     lv_obj_clear_flag(pnl_wifi, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_add_flag(pnl_wifi, LV_OBJ_FLAG_HIDDEN);  // hidden by default
+    lv_obj_add_flag(pnl_wifi, LV_OBJ_FLAG_HIDDEN);
 
     lv_obj_t* card = makeCard(pnl_wifi, 8, 4, CARD_OUTER_W, CONTENT_H - 140);
 
@@ -1014,7 +978,6 @@ static void buildWifiPanel()
     lv_obj_set_style_text_font(title,  &lv_font_montserrat_16_bold, 0);
     lv_obj_set_pos(title, 0, 0);
 
-    // Helper: a labelled text area row
     auto makeWifiRow = [&](const char* label, lv_coord_t y,
                            lv_obj_t** outTa, bool isPassword) {
         lv_obj_t* lbl = lv_label_create(card);
@@ -1036,13 +999,11 @@ static void buildWifiPanel()
     makeWifiRow(STR_WIFI_SSID_LABEL, 30, &wifi_ssid_ta, false);
     makeWifiRow(STR_WIFI_PASS_LABEL, 72, &wifi_pass_ta, true);
 
-    // Pre-fill SSID with the currently active value
     if (wifi_ssid_ta && wifiGetSsid())
         lv_textarea_set_text(wifi_ssid_ta, wifiGetSsid());
     if (wifi_pass_ta && wifiGetPass())
         lv_textarea_set_text(wifi_pass_ta, wifiGetPass());
 
-    // Shared keyboard
     wifi_kb = lv_keyboard_create(pnl_wifi);
     lv_obj_set_size(wifi_kb, UI_W, 130);
     lv_obj_align(wifi_kb, LV_ALIGN_BOTTOM_MID, 0, 0);
@@ -1067,7 +1028,6 @@ static void buildWifiPanel()
 // PANEL NAVIGATION
 // ===========================================================================
 
-// Hide all panels except `show`.
 static void showOnlyPanel(lv_obj_t* show)
 {
     lv_obj_t* panels[] = { pnl_mode, pnl_ctrl, pnl_mon, pnl_wifi, pnl_tmax };
@@ -1078,7 +1038,6 @@ static void showOnlyPanel(lv_obj_t* show)
     }
 }
 
-// Restore the correct main panel after closing the WiFi or Tmax overlay.
 static void uiShowMainFromWifi()
 {
     stateLock();
@@ -1099,8 +1058,6 @@ static void uiShowWifiConfig()
 
 // ===========================================================================
 // uiInit
-//   Build all LVGL screens and show the correct initial panel.
-//   Called once from setup() after LVGL and touch have been initialised.
 // ===========================================================================
 void uiInit()
 {
@@ -1119,8 +1076,6 @@ void uiInit()
     buildWifiPanel();
     buildTmaxPanel();
 
-    // Resume to the correct panel based on persisted state
-    // (e.g. after a power-glitch auto-restore the process may already be running)
     {
         int  pm      = g_state.processMode;
         bool running = g_state.isRunning;
@@ -1129,8 +1084,6 @@ void uiInit()
         else               showOnlyPanel(pnl_mon);
     }
 
-    // Periodic refresh timer – checks the flag set by uiRequestRefresh()
-    // and calls uiRefreshFromState() only when a refresh is needed.
     s_refreshTimer = lv_timer_create([](lv_timer_t*) {
         if (s_refreshRequested) {
             s_refreshRequested = false;
@@ -1142,8 +1095,6 @@ void uiInit()
 
 // ===========================================================================
 // uiRequestRefresh
-//   Thread-safe: sets a flag consumed by the LVGL timer.
-//   Safe to call from any task (sensorsTask, controlTask, loop()).
 // ===========================================================================
 void uiRequestRefresh()
 {
@@ -1153,13 +1104,9 @@ void uiRequestRefresh()
 
 // ===========================================================================
 // uiRefreshFromState
-//   Reads a snapshot of g_state and updates all visible widgets.
-//   Must only be called from the LVGL task/timer (Core 1) to avoid
-//   concurrent modification of LVGL objects.
 // ===========================================================================
 void uiRefreshFromState()
 {
-    // Take a single locked snapshot to minimise the time the mutex is held.
     stateLock();
     AppState s = g_state;
     stateUnlock();
@@ -1191,7 +1138,7 @@ void uiRefreshFromState()
         lv_label_set_text(hdr_t1, tb);
     }
 
-    // Header: IP address (red if not connected, green if connected)
+    // Header: IP address
     if (hdr_ip) {
         const char* ipStr = s.ip.c_str();
         bool bad = wifiIpLooksBad(ipStr);
@@ -1221,19 +1168,19 @@ void uiRefreshFromState()
     }
 
     // -----------------------------------------------------------------------
-    // Panel visibility (only switch when WiFi/Tmax overlay is not showing)
+    // Panel visibility
     // -----------------------------------------------------------------------
     bool wifiVis = pnl_wifi && !lv_obj_has_flag(pnl_wifi, LV_OBJ_FLAG_HIDDEN);
     bool tmaxVis = pnl_tmax && !lv_obj_has_flag(pnl_tmax, LV_OBJ_FLAG_HIDDEN);
 
     if (!wifiVis && !tmaxVis) {
-        if (s.processMode == 0)              showOnlyPanel(pnl_mode);
-        else if (!s.isRunning)               showOnlyPanel(pnl_ctrl);
-        else                                 showOnlyPanel(pnl_mon);
+        if (s.processMode == 0)  showOnlyPanel(pnl_mode);
+        else if (!s.isRunning)   showOnlyPanel(pnl_ctrl);
+        else                     showOnlyPanel(pnl_mon);
     }
 
     // -----------------------------------------------------------------------
-    // Mode panel: highlight the active mode button
+    // Mode panel: highlight active mode button
     // -----------------------------------------------------------------------
     if (btn_mode_dist && btn_mode_rect) {
         bool distOn = (s.processMode == 1);
@@ -1258,18 +1205,13 @@ void uiRefreshFromState()
     }
 
     // -----------------------------------------------------------------------
-    // Control panel: Master Power slider + percentage label
-    //   Only update if the slider is not currently being dragged.
-    //   (If the user is actively dragging, the cbMasterSlider callback already
-    //    updates both the state and the label, so a forced update here would
-    //    cause a visible jump.)
+    // Control panel: Master Power slider
     // -----------------------------------------------------------------------
     if (ctrl_masterSlider) {
         int32_t curSliderVal = lv_slider_get_value(ctrl_masterSlider);
         int32_t stateVal     = (int32_t)s.masterPower;
-        if (curSliderVal != stateVal) {
+        if (curSliderVal != stateVal)
             lv_slider_set_value(ctrl_masterSlider, stateVal, LV_ANIM_OFF);
-        }
     }
     if (ctrl_masterPct) {
         char buf[8];
@@ -1278,9 +1220,7 @@ void uiRefreshFromState()
     }
 
     // -----------------------------------------------------------------------
-    // Control panel: sensor limit buttons (Pressure | Tank | Pillar)
-    //   Show "SensorName: currentDangerValue" so the operator sees the
-    //   current setting at a glance without opening the editor.
+    // Control panel: sensor limit buttons
     // -----------------------------------------------------------------------
     if (lbl_tmax_s[0]) {
         const char* smaxLabels[3] = { STR_SMAX1, STR_SMAX2, STR_SMAX3 };
@@ -1288,10 +1228,8 @@ void uiRefreshFromState()
         for (int i = 0; i < 3; i++) {
             char buf[48];
             if (i == 0) {
-                // Pressure danger threshold
                 snprintf(buf, sizeof(buf), "%s: %.1f kPa", smaxLabels[0], thr.pressDanger * BAR_TO_KPA);
             } else {
-                // tempDanger[1]=Tank, tempDanger[2]=Pillar
                 float val = thr.tempDanger[i];
                 snprintf(buf, sizeof(buf), "%s: %.1f%s", smaxLabels[i], val, STR_UNIT_DEGC);
             }
@@ -1300,27 +1238,22 @@ void uiRefreshFromState()
     }
 
     // -----------------------------------------------------------------------
-    // Control panel: START button
-    //   Enabled only when: mode is set AND masterPower > 0 AND not already
-    //   running AND safety is not tripped.
+    // Control panel: START button enable/disable
     // -----------------------------------------------------------------------
     if (ctrl_start) {
-        bool pmOk      = (s.processMode == 1 || s.processMode == 2);
-        bool powerOk   = (s.masterPower > 0.0f);
-        bool canStart  = pmOk && powerOk && !s.isRunning && !s.safetyTripped;
+        bool pmOk     = (s.processMode == 1 || s.processMode == 2);
+        bool powerOk  = (s.masterPower > 0.0f);
+        bool canStart = pmOk && powerOk && !s.isRunning && !s.safetyTripped;
         if (canStart) lv_obj_clear_state(ctrl_start, LV_STATE_DISABLED);
         else          lv_obj_add_state(ctrl_start,   LV_STATE_DISABLED);
     }
 
     // -----------------------------------------------------------------------
     // Monitor panel: sensor readings
-    //   USER_1 state → danger (red),  USER_2 state → warn (orange)
-    //   setThreshLabel: for core sensors – offline = red "---"
-    //   setExtLabel:    for extended sensors – offline = muted "---" (not an error)
     // -----------------------------------------------------------------------
     const SensorThresholds& thr = (s.processMode == 2) ? s.threshRect : s.threshDist;
 
-    // Core sensor helper – shows offline in red (USER_1)
+    // Core sensor helper – offline shows red
     auto setThreshLabel = [&](lv_obj_t* lbl, float val, float warn, float danger) {
         if (!lbl) return;
         char b[24];
@@ -1344,19 +1277,17 @@ void uiRefreshFromState()
         lv_label_set_text(lbl, b);
     };
 
-    // Extended temp sensor helper – offline shows muted "---" (no alarm colour)
-    auto setExtLabel = [&](lv_obj_t* lbl, float val,
-                           float warn, float danger) {
+    // Extended temp sensor helper – offline shows muted "---"
+    auto setExtLabel = [&](lv_obj_t* lbl, float val, float warn, float danger) {
         if (!lbl) return;
         char b[24];
         if (val <= TEMP_OFFLINE_THRESH) {
             snprintf(b, sizeof(b), "---");
             lv_obj_remove_state(lbl, LV_STATE_USER_1);
             lv_obj_remove_state(lbl, LV_STATE_USER_2);
-            lv_obj_set_style_text_color(lbl, CLR_MUTED, LV_PART_MAIN | LV_STATE_DEFAULT);
+            lv_obj_set_style_text_color(lbl, CLR_MUTED, SEL(LV_PART_MAIN, LV_STATE_DEFAULT));
         } else {
-            // Restore normal colour override (may have been set muted)
-            lv_obj_set_style_text_color(lbl, CLR_TEXT, LV_PART_MAIN | LV_STATE_DEFAULT);
+            lv_obj_set_style_text_color(lbl, CLR_TEXT, SEL(LV_PART_MAIN, LV_STATE_DEFAULT));
             if (val >= danger) {
                 snprintf(b, sizeof(b), "%.1f%s", val, STR_UNIT_DEGC);
                 lv_obj_remove_state(lbl, LV_STATE_USER_2);
@@ -1374,24 +1305,22 @@ void uiRefreshFromState()
         lv_label_set_text(lbl, b);
     };
 
-    // Extended flow helper – offline = muted "---"
+    // Extended flow helper – offline shows muted "---"
     auto setExtFlowLabel = [&](lv_obj_t* lbl, float val) {
         if (!lbl) return;
         char b[24];
         if (val <= SENSOR_OFFLINE + 1.0f) {
             snprintf(b, sizeof(b), "---");
             lv_obj_remove_state(lbl, LV_STATE_USER_1);
-            lv_obj_set_style_text_color(lbl, CLR_MUTED, LV_PART_MAIN | LV_STATE_DEFAULT);
+            lv_obj_set_style_text_color(lbl, CLR_MUTED, SEL(LV_PART_MAIN, LV_STATE_DEFAULT));
         } else {
-            lv_obj_set_style_text_color(lbl, CLR_TEXT, LV_PART_MAIN | LV_STATE_DEFAULT);
+            lv_obj_set_style_text_color(lbl, CLR_TEXT, SEL(LV_PART_MAIN, LV_STATE_DEFAULT));
             snprintf(b, sizeof(b), "%.2f L/m", val);
             lv_obj_remove_state(lbl, LV_STATE_USER_1);
         }
         lv_label_set_text(lbl, b);
     };
 
-    // Use safetyTempMaxC as fallback warn/danger for extended sensors that
-    // have no individual threshold configured.
     float extDanger = s.safetyTempMaxC;
     float extWarn   = extDanger * 0.92f;
 
@@ -1449,9 +1378,7 @@ void uiRefreshFromState()
     setExtFlowLabel(mon_waterCondLbl,  s.waterCondLpm);
     setExtLabel(mon_productLbl, s.productTemp, extWarn, extDanger);
 
-    // Total volume – header bar (show only once a run has started or volume > 0).
-    // Use LV_OBJ_FLAG_HIDDEN rather than empty text so the flex container's
-    // SPACE_EVENLY distribution ignores the slot entirely when idle.
+    // Total volume in header
     if (hdr_total) {
         if (s.isRunning || s.totalVolumeLiters > 0.0f) {
             char b[20];
@@ -1464,10 +1391,7 @@ void uiRefreshFromState()
     }
 
     // -----------------------------------------------------------------------
-    // Monitor panel: Master Power slider + percentage label
-    //   This is the same live control as the Control screen slider.
-    //   Only update slider position if the user is not currently dragging
-    //   (same guard logic as ctrl_masterSlider above).
+    // Monitor panel: Master Power slider
     // -----------------------------------------------------------------------
     if (mon_loadSlider) {
         int32_t curVal   = lv_slider_get_value(mon_loadSlider);

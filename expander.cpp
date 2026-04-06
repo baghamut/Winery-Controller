@@ -146,8 +146,8 @@ void flow2PollTask(void* pvParams) {
             // Count falling edges (HIGH→LOW = sensor pulse active-low)
             uint8_t fell = prev & (~curr);
             taskENTER_CRITICAL(&g_waterFlowMux);
-            if (fell & (1u << EXPANDER2_FLOW_DEPHL)) g_waterDephlPulses++;
-            if (fell & (1u << EXPANDER2_FLOW_COND))  g_waterCondPulses++;
+            if (fell & (1u << EXPANDER2_FLOW_DEPHL)) g_waterDephlPulses+= 1;
+            if (fell & (1u << EXPANDER2_FLOW_COND))  g_waterCondPulses+= 1;
             taskEXIT_CRITICAL(&g_waterFlowMux);
             prev = curr;
         }
