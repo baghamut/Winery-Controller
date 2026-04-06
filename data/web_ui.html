@@ -51,14 +51,16 @@
 
     <div id="screen-0" class="screen">
       <div class="grid grid-cols-2 gap-6">
-        <div onclick="sendCommand('MODE:1')" class="card p-8 hover:border-orange-400 cursor-pointer transition-colors flex flex-col items-center justify-center text-center">
-          <div class="text-6xl mb-4">🥃</div>
-          <h2 id="mode-dist-title" class="text-3xl font-semibold text-orange-400">DISTILLATION</h2>
-          <p class="text-gray-400 mt-2">SSR1–3</p>
-        </div>
+        <!-- Left card: Rectification → MODE:2 (SSR1–3) -->
         <div onclick="sendCommand('MODE:2')" class="card p-8 hover:border-orange-400 cursor-pointer transition-colors flex flex-col items-center justify-center text-center">
           <div class="text-6xl mb-4">⚗️</div>
-          <h2 id="mode-rect-title" class="text-3xl font-semibold text-orange-400">RECTIFICATION</h2>
+          <h2 id="mode-dist-title" class="text-3xl font-semibold text-orange-400">RECTIFICATION</h2>
+          <p class="text-gray-400 mt-2">SSR1–3</p>
+        </div>
+        <!-- Right card: Distillation → MODE:1 (SSR4–5) -->
+        <div onclick="sendCommand('MODE:1')" class="card p-8 hover:border-orange-400 cursor-pointer transition-colors flex flex-col items-center justify-center text-center">
+          <div class="text-6xl mb-4">🥃</div>
+          <h2 id="mode-rect-title" class="text-3xl font-semibold text-orange-400">DISTILLATION</h2>
           <p class="text-gray-400 mt-2">SSR4–5</p>
         </div>
       </div>
@@ -164,16 +166,10 @@
     let currentState = null;
     const REFRESH_MS = 600;
 
-    // Optimistic master-power locking.
-    // When the user drags a slider, we freeze both sliders at the local value
-    // so polls don't snap them back. The lock clears as soon as the server
-    // confirms the new value, or after a 3-second safety timeout.
-    let mPwrPending    = false;   // true while user interaction is unconfirmed
-    let mPwrPendingVal = 0;       // value the user set
-    let mPwrTimer      = null;    // fallback release timer
+    let mPwrPending    = false;
+    let mPwrPendingVal = 0;
+    let mPwrTimer      = null;
 
-    // Map backend ValveOp numeric values to command strings and display symbols.
-    // Numeric values must match the ValveOp enum in state.h.
     const OP_CMD  = { 0:'NONE', 1:'GT', 2:'LT', 3:'GTE', 4:'LTE', 5:'EQ' };
     const OP_SYM  = { 'NONE':'--', 'GT':'>', 'LT':'<', 'GTE':'≥', 'LTE':'≤', 'EQ':'=' };
 
@@ -193,12 +189,6 @@
       return currentState?.flowOfflineThresh ?? -900;
     }
 
-    // Look up a sensor label from the ruleSensors catalog by its RuleSensorId.
-    // Used for non-DS18B20 sensors (flow, pressure, level) whose labels are not
-    // in the sensorNameN series.  Falls back to the provided string so the UI
-    // degrades gracefully before the first /state fetch.
-    // Future sensors become available automatically once enabled in g_ruleSensors
-    // on the device — no JS change required.
     function ruleLabel(id, fallback) {
       const s = currentState?.ruleSensors?.find(s => s.id === id);
       return (s && s.label) ? s.label : fallback;
@@ -237,7 +227,6 @@
       mPwrPendingVal = parseInt(value, 10);
       mPwrPending    = true;
       clearTimeout(mPwrTimer);
-      // Sync the OTHER slider immediately so both stay in visual agreement
       const ctrlSlider = document.getElementById('master-slider');
       const ctrlPct    = document.getElementById('master-pct');
       const monSlider  = document.getElementById('mon-load-slider');
@@ -252,14 +241,12 @@
       const slider = document.getElementById('master-slider');
       const pct    = document.getElementById('master-pct');
       if (!slider) return;
-      // oninput: visual update + lock while dragging
       slider.oninput = () => {
         pct.textContent = slider.value + '%';
         mPwrPendingVal  = parseInt(slider.value, 10);
         mPwrPending     = true;
         clearTimeout(mPwrTimer);
       };
-      // onchange: fires on release — send command and arm 3s fallback timer
       slider.onchange = () => {
         onMasterSliderChange(slider.value);
         sendCommand('MASTER:' + slider.value);
@@ -288,8 +275,9 @@
       if (!currentState) return;
       document.getElementById('app-title').textContent = str('appTitle', 'Cask & Crown');
       document.getElementById('app-subtitle').textContent = str('appSubtitle', 'Winery Controller');
-      document.getElementById('mode-dist-title').textContent = str('procDist', 'DISTILLATION');
-      document.getElementById('mode-rect-title').textContent = str('procRect', 'RECTIFICATION');
+      // Left card = Rectification (MODE:2), Right card = Distillation (MODE:1)
+      document.getElementById('mode-dist-title').textContent = str('procRect', 'RECTIFICATION');
+      document.getElementById('mode-rect-title').textContent = str('procDist', 'DISTILLATION');
       document.getElementById('power-label-control').textContent = str('powerLabel', 'Power');
       document.getElementById('power-label-monitor').textContent = str('powerLabel', 'Power');
       document.getElementById('power-help-text').textContent = str('powerHelpText', 'All active SSRs receive this duty cycle simultaneously.');
@@ -427,14 +415,11 @@
         const op       = document.getElementById(`v${valveIdx}-${type}-op`).value;
         let   val      = parseFloat(document.getElementById(`v${valveIdx}-${type}-val`).value);
         if (isNaN(val)) { alert('Invalid threshold value'); return; }
-        // Input is in kPa for pressure sensors — convert back to bar for storage
         if (isPressureSensorId(sensorId)) val = val / 100;
         const cmdType = type === 'open' ? 'OPENCFG' : 'CLOSECFG';
         sendCommand(`VALVE:${valveIdx}:${cmdType}:${sensorId}:${op}:${val.toFixed(4)}`);
     }
 
-    // Lightweight badge-only update – called on every poll when screen-3 is visible.
-    // Updates only the OPEN/CLOSED spans by stable ID, leaving all form controls intact.
     function updateValveBadges() {
       if (!currentState) return;
       const opens = currentState.valveOpen || [];
@@ -504,15 +489,12 @@
       const unitL    = str('unitLiters', 'L');
       const offline  = str('labelOffline', 'Offline');
 
-      // Build a sensor row HTML string.
-      // cls: colour class applied to the value span.
       const row = (label, valHtml, cls = '') =>
         `<div class="flex justify-between items-center">
            <span class="text-gray-400">${label}</span>
            <span class="${cls}">${valHtml}</span>
          </div>`;
 
-      // Temperature row helper – returns '' (hidden) for extended sensors that are offline.
       const tempRow = (label, val, warn, danger, alwaysShow) => {
         if (val == null || isNaN(val) || val <= tempOff) {
           if (!alwaysShow) return '';
@@ -522,7 +504,6 @@
         return row(label, `${val.toFixed(1)}${unitDegC}`, cls);
       };
 
-      // Flow row helper – returns '' for extended sensors that are offline.
       const flowRow = (label, val, alwaysShow) => {
         if (val == null || isNaN(val) || val <= flowOff) {
           if (!alwaysShow) return '';
@@ -531,30 +512,20 @@
         return row(label, `${val.toFixed(2)} ${unitLpm}`);
       };
 
-      // -----------------------------------------------------------------------
-      // Collect all rows. The grid is 2-column so rows alternate left/right
-      // automatically via CSS grid auto-placement.
-      // -----------------------------------------------------------------------
       const rows = [];
 
-      // Core temperature sensors – always shown (alwaysShow = true)
       rows.push(tempRow(str('sensorName1', 'Room'),    currentState.roomTemp,    thr.tempWarn[0], thr.tempDanger[0], true));
       rows.push(tempRow(str('sensorName2', 'Kettle'),  currentState.kettleTemp,  thr.tempWarn[1], thr.tempDanger[1], true));
       rows.push(tempRow(str('sensorName3', 'Pillar 1'),currentState.pillar1Temp, thr.tempWarn[2], thr.tempDanger[2], true));
 
-      // Extended temperature sensors – appear only when online
-      // thr.tempWarn/Danger for extended slots fall back to safetyTempMaxC (no per-sensor threshold configured)
       const extTempOff  = currentState.safetyTempMaxC  || 95;
-      const extTempWarn = extTempOff * 0.92;   // 92% of limit as visual warn
+      const extTempWarn = extTempOff * 0.92;
       rows.push(tempRow(str('sensorName4', 'Pillar 2'),     currentState.pillar2Temp,  extTempWarn, extTempOff, false));
       rows.push(tempRow(str('sensorName5', 'Pillar 3'),     currentState.pillar3Temp,  extTempWarn, extTempOff, false));
       rows.push(tempRow(str('sensorName6', 'Dephlegmator'), currentState.dephlegmTemp, extTempWarn, extTempOff, false));
       rows.push(tempRow(str('sensorName7', 'Reflux Cond.'), currentState.refluxTemp,   extTempWarn, extTempOff, false));
       rows.push(tempRow(str('sensorName8', 'Product Cooler'),currentState.productTemp, extTempWarn, extTempOff, false));
 
-      // Total volume – rendered in the header bar, not the sensor grid
-
-      // Pressure – always shown
       if (currentState.pressureBar <= pressOff) {
         rows.push(row(str('labelPressure', 'Pressure'), offline, 'sensor-offline'));
       } else {
@@ -563,28 +534,20 @@
         rows.push(row(str('labelPressure', 'Pressure'), `${(currentState.pressureBar * 100).toFixed(1)} ${unitBar}`, pCls));
       }
 
-      // Level – always shown
       const lvlOk = currentState.levelHigh;
       rows.push(row(str('labelLevel', 'Level'),
         lvlOk ? str('labelLevelOk', 'Level OK') : str('labelLevelLow', 'Level LOW'),
         lvlOk ? 'text-green-400' : 'text-red-400'));
 
-      // Product flow – always shown
       rows.push(flowRow(str('labelFlow', 'Flow'), currentState.flowRateLPM, true));
 
-      // Extended flow sensors – appear only when online.
-      // Labels come from the ruleSensors catalog (already in /state) so new
-      // sensors become visible automatically when enabled on the device.
-      // RuleSensorId: Water Dephl = 14, Water Cond = 15, Water Cooler = 16.
       rows.push(flowRow(ruleLabel(14, 'Water Dephl.'), currentState.waterDephlLpm,  false));
       rows.push(flowRow(ruleLabel(15, 'Water Cond.'),  currentState.waterCondLpm,   false));
       rows.push(flowRow(ruleLabel(16, 'Water Cooler'), currentState.waterCoolerLpm, false));
 
-      // Render into the 2-column grid; empty strings are filtered out
       const container = document.getElementById('mon-sensors');
       if (container) container.innerHTML = rows.filter(r => r !== '').join('');
 
-      // Slider — only sync from server when no user interaction is pending
       if (!mPwrPending) {
         const monSlider = document.getElementById('mon-load-slider');
         const monPct    = document.getElementById('mon-load-pct');
@@ -643,10 +606,8 @@
 
       const srvPwr = Math.round(currentState.masterPower || 0);
 
-      // Release the pending lock early once the server confirms our value
       if (mPwrPending && srvPwr === mPwrPendingVal) releaseMPwrLock();
 
-      // Only sync sliders from server when no user interaction is pending
       if (!mPwrPending) {
         const slider = document.getElementById('master-slider');
         const pct    = document.getElementById('master-pct');
@@ -654,9 +615,6 @@
         if (pct) pct.textContent = srvPwr + '%';
       }
 
-      // ── Screen switching ──────────────────────────────────────────────────
-      // Done BEFORE renderMonitorValues/renderLimits so that a render error
-      // never prevents the correct screen from showing.
       const modeScreen    = document.getElementById('screen-0');
       const controlScreen = document.getElementById('screen-1');
       const monitorScreen = document.getElementById('screen-2');
@@ -664,7 +622,7 @@
 
       if (!valveScreen.classList.contains('hidden')) {
         updateValveBadges();
-        renderMonitorValues();   // keep monitor data fresh even when valve screen is open
+        renderMonitorValues();
         return;
       }
 
@@ -682,8 +640,6 @@
         monitorScreen.classList.remove('hidden');
       }
 
-      // While a slider change is pending, use the local value so START can
-      // be enabled immediately without waiting for server confirmation.
       const effectivePower = mPwrPending ? mPwrPendingVal : srvPwr;
 
       const canStart =
@@ -694,7 +650,6 @@
 
       document.getElementById('btn-start').disabled = !canStart;
 
-      // ── Content rendering (after screen is correct) ───────────────────────
       renderMonitorValues();
       renderLimits();
     }
@@ -702,7 +657,7 @@
     // -----------------------------------------------------------------------
     // Sensor Mapper
     // -----------------------------------------------------------------------
-    let scannedRoms = [];   // array of ROM hex strings from last bus scan
+    let scannedRoms = [];
 
     function showSensorMapper() {
       document.getElementById('sensor-mapper-modal').classList.remove('hidden');
@@ -732,20 +687,16 @@
     }
 
     function buildRomOptions(currentRom) {
-      // Current ROM is always shown first so the user can see what's assigned
-      // even if it wasn't found in the last scan.
       const UNSET = '0000000000000000';
       let html = `<option value="${UNSET}">-- unassigned --</option>`;
       const shown = new Set();
 
-      // Add currently assigned ROM (may not be in scannedRoms if sensor was absent)
       if (currentRom && currentRom !== '' && currentRom !== UNSET) {
         const sel = ' selected';
         html += `<option value="${currentRom}"${sel}>${currentRom}</option>`;
         shown.add(currentRom);
       }
 
-      // Add all scanned ROMs not already shown
       for (const rom of scannedRoms) {
         if (shown.has(rom)) continue;
         const sel = (rom === currentRom) ? ' selected' : '';

@@ -9,6 +9,10 @@
 //
 //    The Monitor panel shows a "Load Status: XX%" row on the left column,
 //    using STR_MON_LOAD_STATUS from ui_strings.h.
+//
+//  MODE BUTTON LAYOUT:
+//    Left  button → MODE:2 (Rectification, SSR1–3)
+//    Right button → MODE:1 (Distillation,  SSR4–5)
 // =============================================================================
 #include "ui_lvgl.h"
 #include "config.h"
@@ -112,6 +116,8 @@ static lv_obj_t* pnl_tmax   = nullptr;  // Overlay: sensor max-temp editor
 
 // ---------------------------------------------------------------------------
 // Widget handles – Mode panel
+//   btn_mode_dist = LEFT  button → MODE:2 (Rectification, SSR1–3)
+//   btn_mode_rect = RIGHT button → MODE:1 (Distillation,  SSR4–5)
 // ---------------------------------------------------------------------------
 static lv_obj_t* btn_mode_dist = nullptr;
 static lv_obj_t* btn_mode_rect = nullptr;
@@ -137,25 +143,20 @@ static lv_obj_t* tmax_kb    = nullptr;    // keyboard in tmax panel
 
 // ---------------------------------------------------------------------------
 // Widget handles – Monitor panel
-//
-//  Two-column layout, 7 rows each (18 px/row):
-//    Left col  : Room / Kettle / Pillar1 / Pillar2 / Pillar3 / Dephlegmator / Reflux
-//    Right col : Pressure / Level / Product Flow / Water Dephl. / Water Cond. / Product Cooler
-//    Header    : Total volume (moved out of sensor grid)
 // ---------------------------------------------------------------------------
-static lv_obj_t* mon_t1Lbl        = nullptr;   // Room
-static lv_obj_t* mon_t2Lbl        = nullptr;   // Kettle
-static lv_obj_t* mon_t3Lbl        = nullptr;   // Pillar 1
-static lv_obj_t* mon_pillar2Lbl   = nullptr;   // Pillar 2   (extended)
-static lv_obj_t* mon_pillar3Lbl   = nullptr;   // Pillar 3   (extended)
-static lv_obj_t* mon_dephlegmLbl  = nullptr;   // Dephlegmator (extended)
-static lv_obj_t* mon_refluxLbl    = nullptr;   // Reflux Cond. (extended)
-static lv_obj_t* mon_pLbl         = nullptr;   // Pressure
-static lv_obj_t* mon_levelLbl     = nullptr;   // Level
-static lv_obj_t* mon_flowLbl      = nullptr;   // Product Flow
-static lv_obj_t* mon_waterDephlLbl = nullptr;  // Water Dephl. Flow (extended)
-static lv_obj_t* mon_waterCondLbl  = nullptr;  // Water Cond. Flow  (extended)
-static lv_obj_t* mon_productLbl    = nullptr;  // Product Cooler Temp (extended)
+static lv_obj_t* mon_t1Lbl        = nullptr;
+static lv_obj_t* mon_t2Lbl        = nullptr;
+static lv_obj_t* mon_t3Lbl        = nullptr;
+static lv_obj_t* mon_pillar2Lbl   = nullptr;
+static lv_obj_t* mon_pillar3Lbl   = nullptr;
+static lv_obj_t* mon_dephlegmLbl  = nullptr;
+static lv_obj_t* mon_refluxLbl    = nullptr;
+static lv_obj_t* mon_pLbl         = nullptr;
+static lv_obj_t* mon_levelLbl     = nullptr;
+static lv_obj_t* mon_flowLbl      = nullptr;
+static lv_obj_t* mon_waterDephlLbl = nullptr;
+static lv_obj_t* mon_waterCondLbl  = nullptr;
+static lv_obj_t* mon_productLbl    = nullptr;
 static lv_obj_t* mon_loadSlider   = nullptr;
 static lv_obj_t* mon_loadPct      = nullptr;
 static lv_obj_t* mon_stop         = nullptr;
@@ -183,8 +184,6 @@ static void showOnlyPanel(lv_obj_t* show);
 // HELPERS
 // ===========================================================================
 
-// Remove all default LVGL padding/border/shadow from a container widget.
-// Needed for panels that are pure layout wrappers.
 static void resetPanelStyle(lv_obj_t* obj)
 {
     lv_obj_set_style_pad_all(obj,       0, 0);
@@ -195,7 +194,6 @@ static void resetPanelStyle(lv_obj_t* obj)
     lv_obj_set_style_shadow_width(obj,  0, 0);
 }
 
-// Create a dark rounded card container positioned absolutely on its parent.
 static lv_obj_t* makeCard(lv_obj_t* parent,
                            lv_coord_t x, lv_coord_t y,
                            lv_coord_t w, lv_coord_t h)
@@ -215,7 +213,6 @@ static lv_obj_t* makeCard(lv_obj_t* parent,
     return card;
 }
 
-// Create a styled push-button with text and a click callback.
 static lv_obj_t* makeBtn(lv_obj_t* parent,
                           const char* text,
                           lv_color_t bgColor, lv_color_t txtColor,
@@ -247,30 +244,21 @@ static lv_obj_t* makeBtn(lv_obj_t* parent,
 
 // ===========================================================================
 // MASTER POWER SLIDER CALLBACKS
-// cbMasterSlider  – fires every drag tick (LV_EVENT_VALUE_CHANGED)
-//                   updates state + both % labels + applies SSR immediately.
-//                   NO NVS write here.
-// cbMasterSliderReleased – fires once on finger-lift (LV_EVENT_RELEASED)
-//                          writes NVS exactly once per gesture.
-// Both sliders (ctrl_masterSlider and mon_loadSlider) use these two callbacks.
 // ===========================================================================
 static void cbMasterSlider(lv_event_t* e)
 {
     lv_obj_t* sl = (lv_obj_t*)lv_event_get_target(e);
     int32_t v = lv_slider_get_value(sl);
 
-    // Update both % labels immediately – whichever panel is visible
     char buf[8];
     snprintf(buf, sizeof(buf), "%d%%", (int)v);
     if (ctrl_masterPct) lv_label_set_text(ctrl_masterPct, buf);
     if (mon_loadPct)    lv_label_set_text(mon_loadPct,    buf);
 
-    // Update state in-place – no NVS write
     stateLock();
     g_state.masterPower = (float)v;
     stateUnlock();
 
-    // Apply SSR immediately so hardware responds without waiting for the loop
     applySsrFromState();
 }
 
@@ -285,8 +273,6 @@ static void cbMasterSliderReleased(lv_event_t* e)
 
 // ===========================================================================
 // HEADER
-//   Fixed strip at the top of every screen.
-//   Contains: STOPPED/RUNNING/SAFETY  |  Room temp  |  Max temp  |  IP
 // ===========================================================================
 static bool wifiIpLooksBad(const char* ipStr)
 {
@@ -314,7 +300,6 @@ static void buildHeader()
     lv_obj_set_style_pad_all(hdr_bar,      4, 0);
     lv_obj_clear_flag(hdr_bar, LV_OBJ_FLAG_SCROLLABLE);
 
-    // SPACE_EVENLY distributes: Status | T1 | Max | IP
     lv_obj_set_layout(hdr_bar, LV_LAYOUT_FLEX);
     lv_obj_set_flex_flow(hdr_bar, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(hdr_bar,
@@ -323,7 +308,6 @@ static void buildHeader()
                           LV_FLEX_ALIGN_CENTER);
     lv_obj_set_style_pad_column(hdr_bar, 0, 0);
 
-    // Status badge (STOPPED / RUNNING / SAFETY TRIP)
     hdr_status = lv_label_create(hdr_bar);
     lv_label_set_text(hdr_status, STR_STATUS_STOPPED);
     lv_obj_set_style_text_color(hdr_status, CLR_MUTED, 0);
@@ -331,7 +315,6 @@ static void buildHeader()
     lv_obj_set_width(hdr_status, LV_SIZE_CONTENT);
     lv_obj_set_style_text_align(hdr_status, LV_TEXT_ALIGN_CENTER, 0);
 
-    // T1 – Room sensor (USER_1 state = offline/red)
     hdr_t1 = lv_label_create(hdr_bar);
     {
         char buf[20];
@@ -340,12 +323,11 @@ static void buildHeader()
     }
     lv_obj_set_style_text_color(hdr_t1, CLR_GREEN,  SEL(LV_PART_MAIN, LV_STATE_DEFAULT));
     lv_obj_set_style_text_color(hdr_t1, CLR_DANGER, SEL(LV_PART_MAIN, LV_STATE_USER_1));
-    lv_obj_add_state(hdr_t1, LV_STATE_USER_1);   // boot: sensor offline
+    lv_obj_add_state(hdr_t1, LV_STATE_USER_1);
     lv_obj_set_style_text_font(hdr_t1, &lv_font_montserrat_14, 0);
     lv_obj_set_width(hdr_t1, LV_SIZE_CONTENT);
     lv_obj_set_style_text_align(hdr_t1, LV_TEXT_ALIGN_CENTER, 0);
 
-    // Max temperature (or safety trip message)
     hdr_tmax = lv_label_create(hdr_bar);
     lv_label_set_text(hdr_tmax, "Max: --");
     lv_obj_set_style_text_color(hdr_tmax, CLR_MUTED, 0);
@@ -353,16 +335,14 @@ static void buildHeader()
     lv_obj_set_width(hdr_tmax, LV_SIZE_CONTENT);
     lv_obj_set_style_text_align(hdr_tmax, LV_TEXT_ALIGN_CENTER, 0);
 
-    // Total distillate volume – hidden until a run starts or volume > 0
     hdr_total = lv_label_create(hdr_bar);
     lv_label_set_text(hdr_total, "");
     lv_obj_set_style_text_color(hdr_total, CLR_MUTED, 0);
     lv_obj_set_style_text_font(hdr_total,  &lv_font_montserrat_14, 0);
     lv_obj_set_width(hdr_total, LV_SIZE_CONTENT);
     lv_obj_set_style_text_align(hdr_total, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_add_flag(hdr_total, LV_OBJ_FLAG_HIDDEN);  // hidden by default; flex ignores it
+    lv_obj_add_flag(hdr_total, LV_OBJ_FLAG_HIDDEN);
 
-    // IP address button – tapping opens WiFi config panel
     hdr_ip_btn = lv_btn_create(hdr_bar);
     lv_obj_set_width(hdr_ip_btn,  LV_SIZE_CONTENT);
     lv_obj_set_height(hdr_ip_btn, HDR_H + 8);
@@ -384,11 +364,11 @@ static void buildHeader()
 
 // ===========================================================================
 // MODE PANEL  (Screen 0)
-//   Two large buttons: DISTILLATION and RECTIFICATION.
-//   Pressing one sends MODE:1 or MODE:2 which transitions to the Control panel.
+//   Left  button → MODE:2  (Rectification, SSR1–3)
+//   Right button → MODE:1  (Distillation,  SSR4–5)
 // ===========================================================================
-static void cbModeDist(lv_event_t*) { handleCommand("MODE:1"); }
-static void cbModeRect(lv_event_t*) { handleCommand("MODE:2"); }
+static void cbModeDist(lv_event_t*) { handleCommand("MODE:2"); }  // left  = Rectification
+static void cbModeRect(lv_event_t*) { handleCommand("MODE:1"); }  // right = Distillation
 
 static void buildModePanel()
 {
@@ -418,7 +398,7 @@ static void buildModePanel()
 
     lv_obj_t* icon_left = lv_image_create(top_card);
     lv_image_set_src(icon_left, "L:/barrel.png");
-    lv_obj_set_size(icon_left, 96, 96);          // display size, independent of PNG size
+    lv_obj_set_size(icon_left, 96, 96);
     lv_obj_align(icon_left, LV_ALIGN_LEFT_MID, 16, 2);
 
     // Bottom card: mode selection buttons
@@ -433,17 +413,17 @@ static void buildModePanel()
     const lv_coord_t btnH = bot_card_h - btnY - 24;
     const lv_coord_t btnW = (CARD_INNER_W - 8) / 2;
 
-    btn_mode_dist = makeBtn(card, STR_PROC_DIST, CLR_DIST_BG, CLR_ACCENT,
+    // Left button: Rectification (SSR1–3), sends MODE:2
+    btn_mode_dist = makeBtn(card, STR_PROC_RECT, CLR_RECT_BG, CLR_ACCENT,
                             0,        btnY, btnW, btnH, cbModeDist);
-    btn_mode_rect = makeBtn(card, STR_PROC_RECT, CLR_RECT_BG, CLR_ACCENT,
+    // Right button: Distillation (SSR4–5), sends MODE:1
+    btn_mode_rect = makeBtn(card, STR_PROC_DIST, CLR_DIST_BG, CLR_ACCENT,
                             btnW + 8, btnY, btnW, btnH, cbModeRect);
 }
 
 
 // ===========================================================================
 // TMAX PANEL  (Overlay)
-//   Sensor max temperature editor.  Appears over the Control panel when a
-//   limit button is tapped.  Has [-5][-1][textarea][+1][+5] + BACK + SAVE.
 // ===========================================================================
 static const lv_coord_t TMAX_ROW_HEIGHT = 44;
 static const lv_coord_t TMAX_BTN_WIDTH  = 60;
@@ -459,9 +439,8 @@ static void buildTmaxPanel()
     lv_obj_set_style_bg_opa(pnl_tmax, LV_OPA_COVER, 0);
     resetPanelStyle(pnl_tmax);
     lv_obj_clear_flag(pnl_tmax, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_add_flag(pnl_tmax, LV_OBJ_FLAG_HIDDEN);  // hidden by default
+    lv_obj_add_flag(pnl_tmax, LV_OBJ_FLAG_HIDDEN);
 
-    // Card leaves bottom 140 px for the on-screen keyboard
     lv_obj_t* card = makeCard(pnl_tmax, 8, 4, CARD_OUTER_W, CONTENT_H - 140);
 
     lv_obj_t* title = lv_label_create(card);
@@ -470,7 +449,6 @@ static void buildTmaxPanel()
     lv_obj_set_style_text_font(title,  &lv_font_montserrat_16_bold, 0);
     lv_obj_set_pos(title, 0, 0);
 
-    // Row: [-5][-1][value][+1][+5]
     lv_obj_t* grp = lv_obj_create(card);
     lv_obj_set_size(grp, lv_pct(100), 50);
     lv_obj_set_pos(grp, 0, 30);
@@ -482,7 +460,6 @@ static void buildTmaxPanel()
     lv_obj_set_flex_flow(grp, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(grp, LV_FLEX_ALIGN_SPACE_EVENLY, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 
-    // Helper lambda: create a ±delta nudge button inside the flex row
     auto makeTmaxBtnInGrp = [&](const char* txt, int delta) {
         lv_obj_t* b = lv_btn_create(grp);
         lv_obj_set_size(b, TMAX_BTN_WIDTH, TMAX_BTN_HEIGHT);
@@ -513,7 +490,6 @@ static void buildTmaxPanel()
     makeTmaxBtnInGrp("-5", -5);
     makeTmaxBtnInGrp("-1", -1);
 
-    // Numeric text area
     tmax_ta = lv_textarea_create(grp);
     lv_textarea_set_one_line(tmax_ta, true);
     lv_textarea_set_accepted_chars(tmax_ta, "0123456789.");
@@ -532,7 +508,6 @@ static void buildTmaxPanel()
     makeTmaxBtnInGrp("+1", 1);
     makeTmaxBtnInGrp("+5", 5);
 
-    // On-screen number keyboard pinned to the bottom of the panel
     tmax_kb = lv_keyboard_create(pnl_tmax);
     lv_keyboard_set_mode(tmax_kb, LV_KEYBOARD_MODE_NUMBER);
     lv_obj_set_size(tmax_kb, UI_W, 130);
@@ -544,21 +519,16 @@ static void buildTmaxPanel()
     const lv_coord_t btnY  = 90;
     const lv_coord_t btnH  = 36;
 
-    // BACK → returns to whichever main panel was active
     lv_obj_t* btn_back = makeBtn(card, STR_BTN_BACK, BCK_CARD, CLR_TEXT,
                                  0, btnY, halfW, btnH,
                                  [](lv_event_t*) { uiShowMainFromWifi(); });
     lv_obj_set_style_text_font(btn_back, &lv_font_montserrat_16_bold, 0);
 
-    // SAVE → sends the correct threshold command then returns to main.
-    // Pressure (s_activeTmaxSensor == 0) uses THRESH:D/R:PD: (bar).
-    // Temperature sensors use TMAX:N:SET: (°C), N = 2 (Kettle) or 3 (Pillar 1).
     lv_obj_t* btn_save = makeBtn(card, STR_BTN_SAVE, STR_GREEN, CLR_TEXT,
                                  halfW + gap, btnY, halfW, btnH, [](lv_event_t*) {
         if (!tmax_ta) return;
         const char* val = lv_textarea_get_text(tmax_ta);
         if (s_activeTmaxSensor == 0) {
-            // Pressure danger threshold – must use THRESH command
             stateLock();
             bool isRect = (g_state.processMode == 2);
             stateUnlock();
@@ -567,7 +537,6 @@ static void buildTmaxPanel()
             snprintf(barStr, sizeof(barStr), "%.4f", kpa * KPA_TO_BAR);
             handleCommand(String(isRect ? "THRESH:R:PD:" : "THRESH:D:PD:") + String(barStr));
         } else {
-            // Temperature danger threshold (sensor index 2 = Kettle, 3 = Pillar 1)
             handleCommand("TMAX:" + String(s_activeTmaxSensor) + ":SET:" + String(val));
         }
         uiRequestRefresh();
@@ -579,38 +548,21 @@ static void buildTmaxPanel()
 
 // ===========================================================================
 // CONTROL PANEL  (Screen 1)
-//   This panel is shown after a mode is selected and before START.
-//   The operator sets Master Power here, then presses START.
-//
-//   MASTER POWER UNIFICATION: replaces 3 (or 2) individual SSR slider rows
-//   with ONE row containing:
-//     [Master Power label]  [slider 0–100]  [XX%]
-//
-//   Sensor limit buttons (Pressure / Tank / Pillar) remain unchanged.
-//   BACK returns to mode selection (MODE:0).
-//   START is disabled if masterPower == 0 or mode == 0 or safety tripped.
 // ===========================================================================
 static void cbStart(lv_event_t*)       { handleCommand("START"); }
 static void cbControlBack(lv_event_t*) { handleCommand("MODE:0"); }
 
 static void cbOpenTmaxConfig(lv_event_t* e)
 {
-    // Called when a sensor limit button is tapped.
-    // Reads the current threshold value and pre-fills the editor.
-    // user-data 0  → pressure (pressDanger)
-    // user-data 2  → Kettle   (tempDanger[1])
-    // user-data 3  → Pillar 1 (tempDanger[2])
     s_activeTmaxSensor = (int)(intptr_t)lv_event_get_user_data(e);
 
     stateLock();
     float val;
     if (s_activeTmaxSensor == 0) {
-        // Pressure limit
         val = ((g_state.processMode == 2)
             ? g_state.threshRect.pressDanger
             : g_state.threshDist.pressDanger) * BAR_TO_KPA;
     } else {
-        // Temperature limit – index is (s_activeTmaxSensor - 1): 1 = Kettle, 2 = Pillar
         val = (g_state.processMode == 2)
             ? g_state.threshRect.tempDanger[s_activeTmaxSensor - 1]
             : g_state.threshDist.tempDanger[s_activeTmaxSensor - 1];
@@ -637,16 +589,13 @@ static void buildControlPanel()
 
     lv_obj_t* card = makeCard(pnl_ctrl, 8, 8, CARD_OUTER_W, CARD_H);
 
-    // Panel title: "Distillation Control" or "Rectification Control"
     ctrl_title = lv_label_create(card);
     lv_label_set_text(ctrl_title, STR_TITLE_CTRL);
     lv_obj_set_style_text_color(ctrl_title, CLR_ACCENT, 0);
     lv_obj_set_style_text_font(ctrl_title, &lv_font_montserrat_16_bold, 0);
     lv_obj_set_pos(ctrl_title, 0, 0);
 
-    // -----------------------------------------------------------------------
     // MASTER POWER ROW
-    // -----------------------------------------------------------------------
     lv_obj_t* pwrRow = lv_obj_create(card);
     lv_obj_set_pos(pwrRow, 0, CTRL_ROW_Y0);
     lv_obj_set_size(pwrRow, lv_pct(100), CTRL_ROW_H + 6);
@@ -687,23 +636,17 @@ static void buildControlPanel()
                  MASTER_SLIDER_X + MASTER_SLIDER_W + MASTER_PCT_GAP,
                  0);
 
-    // Register both callbacks – VALUE_CHANGED for live update, RELEASED for NVS write
     lv_obj_add_event_cb(ctrl_masterSlider, cbMasterSlider,         LV_EVENT_VALUE_CHANGED, nullptr);
     lv_obj_add_event_cb(ctrl_masterSlider, cbMasterSliderReleased, LV_EVENT_RELEASED,      nullptr);
 
-    // -----------------------------------------------------------------------
     // SENSOR LIMITS AREA
-    //   Positioned between Master row and BACK/START with guaranteed gap
-    // -----------------------------------------------------------------------
     const lv_coord_t gap     = 8;
     const lv_coord_t halfW   = (CARD_INNER_W - gap) / 2;
     const lv_coord_t btnH    = 36;
     const lv_coord_t marginB = 4;
 
-    // Bottom action row first
     lv_coord_t startY = 8 + CARD_INNER_H - btnH - marginB - 2;
 
-    // Limits block placed higher and sized so it never overlaps START/BACK
     lv_coord_t rowY = CTRL_ROW_Y0 + CTRL_ROW_DY + 2;
     lv_coord_t limitsBottomGap = 10;
     lv_coord_t tmaxBoxH = startY - rowY - limitsBottomGap;
@@ -748,16 +691,11 @@ static void buildControlPanel()
         lv_obj_set_style_text_align(lbl_tmax_s[i], LV_TEXT_ALIGN_CENTER, 0);
         lv_obj_center(lbl_tmax_s[i]);
 
-        // user-data convention:
-        //   0        → pressure sensor  (pressDanger, uses THRESH:D/R:PD command)
-        //   2, 3     → temp sensor index 1, 2 (Kettle, Pillar 1 → tempDanger[1..2])
         lv_obj_add_event_cb(btn_tmax_s[i], cbOpenTmaxConfig, LV_EVENT_CLICKED,
                             (void*)(intptr_t)(i == 0 ? 0 : i + 1));
     }
 
-    // -----------------------------------------------------------------------
-    // BACK + START buttons at the bottom of the card
-    // -----------------------------------------------------------------------
+    // BACK + START buttons
     ctrl_back = makeBtn(card, STR_BTN_BACK, BCK_CARD, CLR_TEXT,
                         0, startY, halfW, btnH, cbControlBack);
     lv_obj_set_style_text_font(ctrl_back, &lv_font_montserrat_16_bold, 0);
@@ -769,23 +707,9 @@ static void buildControlPanel()
 
 // ===========================================================================
 // MONITOR PANEL  (Screen 2)
-//   Shown while the process is running.
-//
-//  Two-column layout inside one card:
-//    Left  col (sensors): T1 / T2 / T3 / Total
-//    Right col          : Pressure / Level / Flow / Load Status slider
-//
-//  SSR chips are REMOVED – the Load Status row now contains a read-only
-//  slider identical in appearance to the Control panel Master Power slider.
-//  It can be dragged to change Master Power just like the Control panel slider.
-//
-//  STOP button sits at the very bottom of the card.
 // ===========================================================================
 static void cbStop(lv_event_t*)
 {
-    // STOP already resets processMode to 0, masterPower to 0, clears the
-    // safety latch, and calls stateSaveToNVS() — no need for a separate
-    // MODE:0 which would trigger a second redundant NVS write.
     handleCommand("STOP");
 }
 
@@ -801,7 +725,6 @@ static void buildMonitorPanel()
 
     lv_obj_t* card = makeCard(pnl_mon, 8, 8, CARD_OUTER_W, CARD_H);
 
-    // Panel title
     lv_obj_t* titleLbl = lv_label_create(card);
     lv_label_set_text(titleLbl, STR_TITLE_MONITOR);
     lv_obj_set_style_text_color(titleLbl, CLR_ACCENT, 0);
@@ -809,10 +732,9 @@ static void buildMonitorPanel()
     lv_obj_set_pos(titleLbl, 0, 0);
 
     const lv_coord_t COL_GAP  = 8;
-    const lv_coord_t COL_W    = (CARD_INNER_W - COL_GAP) / 2;  // 220 px
+    const lv_coord_t COL_W    = (CARD_INNER_W - COL_GAP) / 2;
     const lv_coord_t COL_R_X  = COL_W + COL_GAP;
 
-    // Helper: label name/value row – 18 px tall.
     auto makeColRow = [&](lv_coord_t x, lv_coord_t y, lv_coord_t w,
                           const char* name, lv_obj_t** outLbl)
     {
@@ -843,7 +765,6 @@ static void buildMonitorPanel()
         *outLbl = l2;
     };
 
-    // LEFT COLUMN – temperatures (rows 0–6)
     lv_coord_t ly = MON_ROW_Y0;
     makeColRow(0, ly, COL_W, STR_SENSOR_NAME1,  &mon_t1Lbl);       ly += MON_ROW_DY;
     makeColRow(0, ly, COL_W, STR_SENSOR_NAME2,  &mon_t2Lbl);       ly += MON_ROW_DY;
@@ -853,7 +774,6 @@ static void buildMonitorPanel()
     makeColRow(0, ly, COL_W, STR_SENSOR_NAME6,  &mon_dephlegmLbl); ly += MON_ROW_DY;
     makeColRow(0, ly, COL_W, STR_SENSOR_NAME7,  &mon_refluxLbl);
 
-    // RIGHT COLUMN – pressure / level / flow (rows 0–5)
     lv_coord_t ry = MON_ROW_Y0;
     makeColRow(COL_R_X, ry, COL_W, STR_MON_PRESSURE,      &mon_pLbl);          ry += MON_ROW_DY;
     makeColRow(COL_R_X, ry, COL_W, STR_MON_LEVEL,         &mon_levelLbl);      ry += MON_ROW_DY;
@@ -862,11 +782,9 @@ static void buildMonitorPanel()
     makeColRow(COL_R_X, ry, COL_W, STR_SENSOR_WATER_COND, &mon_waterCondLbl);  ry += MON_ROW_DY;
     makeColRow(COL_R_X, ry, COL_W, STR_SENSOR_NAME8,      &mon_productLbl);
 
-    // -----------------------------------------------------------------------
-    // MASTER POWER ROW  (full-width, between sensor grid and STOP button)
-    // -----------------------------------------------------------------------
-    const lv_coord_t LOAD_ROW_H = CTRL_ROW_H + 6;                // 42 px
-    const lv_coord_t LOAD_ROW_Y = MON_STOP_Y - LOAD_ROW_H - 4;   // 160 px
+    // MASTER POWER ROW
+    const lv_coord_t LOAD_ROW_H = CTRL_ROW_H + 6;
+    const lv_coord_t LOAD_ROW_Y = MON_STOP_Y - LOAD_ROW_H - 4;
 
     lv_obj_t* load_Row = lv_obj_create(card);
     lv_obj_set_pos(load_Row, 0, LOAD_ROW_Y);
@@ -909,9 +827,6 @@ static void buildMonitorPanel()
                  MASTER_SLIDER_X + MASTER_SLIDER_W + MASTER_PCT_GAP,
                  0);
 
-    // -----------------------------------------------------------------------
-    // STOP button – full-width, bottom of card
-    // -----------------------------------------------------------------------
     mon_stop = makeBtn(card, STR_BTN_STOP, CLR_DANGER, CLR_TEXT,
                        0, MON_STOP_Y, CARD_INNER_W, 32, cbStop);
     lv_obj_set_style_text_font(mon_stop, &lv_font_montserrat_16_bold, 0);
@@ -919,7 +834,7 @@ static void buildMonitorPanel()
 
 
 // ===========================================================================
-// URL encoding helper  (used by cbWifiSave)
+// URL encoding helper
 // ===========================================================================
 static String urlEncode(const char* src)
 {
@@ -1111,9 +1026,7 @@ void uiRefreshFromState()
     AppState s = g_state;
     stateUnlock();
 
-    // -----------------------------------------------------------------------
     // Header: status badge
-    // -----------------------------------------------------------------------
     if (s.safetyTripped) {
         lv_label_set_text(hdr_status, STR_STATUS_SAFETY);
         lv_obj_set_style_text_color(hdr_status, CLR_DANGER, 0);
@@ -1167,9 +1080,7 @@ void uiRefreshFromState()
         }
     }
 
-    // -----------------------------------------------------------------------
     // Panel visibility
-    // -----------------------------------------------------------------------
     bool wifiVis = pnl_wifi && !lv_obj_has_flag(pnl_wifi, LV_OBJ_FLAG_HIDDEN);
     bool tmaxVis = pnl_tmax && !lv_obj_has_flag(pnl_tmax, LV_OBJ_FLAG_HIDDEN);
 
@@ -1179,34 +1090,30 @@ void uiRefreshFromState()
         else                     showOnlyPanel(pnl_mon);
     }
 
-    // -----------------------------------------------------------------------
     // Mode panel: highlight active mode button
-    // -----------------------------------------------------------------------
+    // btn_mode_dist = left  = MODE:2 (Rectification)
+    // btn_mode_rect = right = MODE:1 (Distillation)
     if (btn_mode_dist && btn_mode_rect) {
-        bool distOn = (s.processMode == 1);
-        bool rectOn = (s.processMode == 2);
+        bool leftOn  = (s.processMode == 2);  // left  = Rectification
+        bool rightOn = (s.processMode == 1);  // right = Distillation
         lv_obj_set_style_bg_color(btn_mode_dist,
-            distOn ? CLR_ACCENT : CLR_DIST_BG, 0);
+            leftOn ? CLR_ACCENT : CLR_RECT_BG, 0);
         lv_obj_set_style_text_color(lv_obj_get_child(btn_mode_dist, 0),
-            distOn ? lv_color_hex(0x111111) : CLR_ACCENT, 0);
+            leftOn ? lv_color_hex(0x111111) : CLR_ACCENT, 0);
         lv_obj_set_style_bg_color(btn_mode_rect,
-            rectOn ? CLR_ACCENT : CLR_RECT_BG, 0);
+            rightOn ? CLR_ACCENT : CLR_DIST_BG, 0);
         lv_obj_set_style_text_color(lv_obj_get_child(btn_mode_rect, 0),
-            rectOn ? lv_color_hex(0x111111) : CLR_ACCENT, 0);
+            rightOn ? lv_color_hex(0x111111) : CLR_ACCENT, 0);
     }
 
-    // -----------------------------------------------------------------------
     // Control panel: title
-    // -----------------------------------------------------------------------
     if (ctrl_title) {
         if      (s.processMode == 1) lv_label_set_text(ctrl_title, STR_TITLE_CTRL_DIST);
         else if (s.processMode == 2) lv_label_set_text(ctrl_title, STR_TITLE_CTRL_RECT);
         else                          lv_label_set_text(ctrl_title, STR_TITLE_CTRL);
     }
 
-    // -----------------------------------------------------------------------
     // Control panel: Master Power slider
-    // -----------------------------------------------------------------------
     if (ctrl_masterSlider) {
         int32_t curSliderVal = lv_slider_get_value(ctrl_masterSlider);
         int32_t stateVal     = (int32_t)s.masterPower;
@@ -1219,9 +1126,7 @@ void uiRefreshFromState()
         lv_label_set_text(ctrl_masterPct, buf);
     }
 
-    // -----------------------------------------------------------------------
     // Control panel: sensor limit buttons
-    // -----------------------------------------------------------------------
     if (lbl_tmax_s[0]) {
         const char* smaxLabels[3] = { STR_SMAX1, STR_SMAX2, STR_SMAX3 };
         const SensorThresholds& thr = (s.processMode == 2) ? s.threshRect : s.threshDist;
@@ -1237,9 +1142,7 @@ void uiRefreshFromState()
         }
     }
 
-    // -----------------------------------------------------------------------
     // Control panel: START button enable/disable
-    // -----------------------------------------------------------------------
     if (ctrl_start) {
         bool pmOk     = (s.processMode == 1 || s.processMode == 2);
         bool powerOk  = (s.masterPower > 0.0f);
@@ -1248,12 +1151,9 @@ void uiRefreshFromState()
         else          lv_obj_add_state(ctrl_start,   LV_STATE_DISABLED);
     }
 
-    // -----------------------------------------------------------------------
     // Monitor panel: sensor readings
-    // -----------------------------------------------------------------------
     const SensorThresholds& thr = (s.processMode == 2) ? s.threshRect : s.threshDist;
 
-    // Core sensor helper – offline shows red
     auto setThreshLabel = [&](lv_obj_t* lbl, float val, float warn, float danger) {
         if (!lbl) return;
         char b[24];
@@ -1277,7 +1177,6 @@ void uiRefreshFromState()
         lv_label_set_text(lbl, b);
     };
 
-    // Extended temp sensor helper – offline shows muted "---"
     auto setExtLabel = [&](lv_obj_t* lbl, float val, float warn, float danger) {
         if (!lbl) return;
         char b[24];
@@ -1305,7 +1204,6 @@ void uiRefreshFromState()
         lv_label_set_text(lbl, b);
     };
 
-    // Extended flow helper – offline shows muted "---"
     auto setExtFlowLabel = [&](lv_obj_t* lbl, float val) {
         if (!lbl) return;
         char b[24];
@@ -1324,7 +1222,6 @@ void uiRefreshFromState()
     float extDanger = s.safetyTempMaxC;
     float extWarn   = extDanger * 0.92f;
 
-    // LEFT COLUMN – temperatures
     setThreshLabel(mon_t1Lbl, s.roomTemp,    thr.tempWarn[0], thr.tempDanger[0]);
     setThreshLabel(mon_t2Lbl, s.kettleTemp,  thr.tempWarn[1], thr.tempDanger[1]);
     setThreshLabel(mon_t3Lbl, s.pillar1Temp, thr.tempWarn[2], thr.tempDanger[2]);
@@ -1333,7 +1230,6 @@ void uiRefreshFromState()
     setExtLabel(mon_dephlegmLbl, s.dephlegmTemp, extWarn, extDanger);
     setExtLabel(mon_refluxLbl,   s.refluxTemp,   extWarn, extDanger);
 
-    // RIGHT COLUMN – pressure / level / flow
     if (mon_pLbl) {
         char b[24];
         if (s.pressureBar <= SENSOR_OFFLINE + 1.0f) {
@@ -1390,9 +1286,7 @@ void uiRefreshFromState()
         }
     }
 
-    // -----------------------------------------------------------------------
     // Monitor panel: Master Power slider
-    // -----------------------------------------------------------------------
     if (mon_loadSlider) {
         int32_t curVal   = lv_slider_get_value(mon_loadSlider);
         int32_t stateVal = (int32_t)s.masterPower;
@@ -1410,7 +1304,7 @@ void uiRefreshFromState()
 
 
 // ===========================================================================
-// Public screen-switch helpers  (called from LVGL code only)
+// Public screen-switch helpers
 // ===========================================================================
 void uiShowModeScreen()    { showOnlyPanel(pnl_mode); }
 void uiShowControlScreen() { showOnlyPanel(pnl_ctrl); }

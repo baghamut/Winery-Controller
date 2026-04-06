@@ -5,8 +5,8 @@
 //    All active SSRs for the selected process mode receive the SAME duty
 //    cycle: g_state.masterPower (0–100 %).
 //
-//    Distillation (mode 1)  → SSR1, SSR2, SSR3  all get masterPower %
-//    Rectification (mode 2) → SSR4, SSR5         all get masterPower %
+//    Distillation (mode 1)  → SSR4, SSR5         all get masterPower %
+//    Rectification (mode 2) → SSR1, SSR2, SSR3   all get masterPower %
 //    Off (mode 0)           → all SSRs at 0 %
 //
 //    SSRs turn ON automatically when masterPower > 0 and the process is
@@ -172,10 +172,10 @@ bool controlSafetyCheck() {
 //
 //   Rules:
 //     1. If not running OR processMode == 0 → all SSRs at 0 %.
-//     2. If running in mode 1 (Distillation): SSR1–3 get masterPower %.
-//        SSR4–5 stay at 0 %.
-//     3. If running in mode 2 (Rectification): SSR4–5 get masterPower %.
+//     2. If running in mode 1 (Distillation): SSR4–5 get masterPower %.
 //        SSR1–3 stay at 0 %.
+//     3. If running in mode 2 (Rectification): SSR1–3 get masterPower %.
+//        SSR4–5 stay at 0 %.
 //     4. masterPower == 0 → all SSRs at 0 % (treated as "heaters off").
 //
 //   Also keeps lastTankTempC continuously updated while running so that a
@@ -207,8 +207,8 @@ bool controlSafetyCheck() {
     for (int i = 0; i < SSR_COUNT; ++i) {
         // Determine whether this SSR is in the active group for the current mode
         bool allowed = false;
-        if (pm == 1 && i <= 2)            allowed = true;  // Distillation: SSR1–3
-        if (pm == 2 && (i == 3 || i == 4)) allowed = true; // Rectification: SSR4–5
+        if (pm == 1 && (i == 3 || i == 4)) allowed = true;  // Distillation: SSR4–5
+        if (pm == 2 && i <= 2)             allowed = true;  // Rectification: SSR1–3
 
         // All allowed SSRs receive the same masterPower duty cycle.
         // SSRs outside the active group are always 0 % for safety.
@@ -432,7 +432,7 @@ void handleCommand(const String& cmd) {
         g_state.masterPower = p;
         stateUnlock();
 
-        applySsrFromState();    // ← ADD: immediate hardware update
+        applySsrFromState();    // immediate hardware update
 
         stateSaveToNVS();
         Serial.printf("[CMD] masterPower → %.1f %%\n", p);

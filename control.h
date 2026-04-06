@@ -34,7 +34,7 @@ void controlTask(void* pvParams);
 //   always identical regardless of which UI the operator uses.
 //
 //   Supported commands:
-//     MODE:X          – 0=Off, 1=Distillation, 2=Rectification
+//     MODE:X          – 0=Off, 1=Distillation (SSR4–5), 2=Rectification (SSR1–3)
 //                       Stops any running process and resets timer.
 //     MASTER:NN.N     – Set masterPower to NN.N % (0–100).
 //                       SSRs turn ON automatically when masterPower > 0
