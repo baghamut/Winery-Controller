@@ -50,7 +50,7 @@ portMUX_TYPE g_waterFlowMux = portMUX_INITIALIZER_UNLOCKED;
 
 void IRAM_ATTR flowISR() {
     portENTER_CRITICAL_ISR(&s_flowMux);
-    g_flowPulses++;
+    g_flowPulses = g_flowPulses + 1;
     portEXIT_CRITICAL_ISR(&s_flowMux);
 }
 

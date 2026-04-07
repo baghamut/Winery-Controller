@@ -3,14 +3,15 @@
 // =============================================================================
 #pragma once
 #include <Arduino.h>
-#include <WebServer.h>
+#include <esp_https_server.h>
 
 // ---------------------------------------------------------------------------
 // webUiRegisterHandlers
 //   Register the GET / route on the provided WebServer instance.
 //   Must be called from httpServerInit() before server.begin().
 // ---------------------------------------------------------------------------
-void webUiRegisterHandlers(WebServer& server);
+#include <esp_https_server.h>
+void webUiRegisterHandlers(httpd_handle_t server);
 
 // ---------------------------------------------------------------------------
 // webUiStartFetchTask

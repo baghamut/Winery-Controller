@@ -6,14 +6,16 @@
 
 // ---------------------------------------------------------------------------
 // httpServerInit
-//   Register all URL routes and call server.begin().
+//   Register all URL routes and start the HTTPS server on port 443.
+//   Loads TLS cert from NVS ("certs" namespace); falls back to compiled-in
+//   certs.h if NVS is empty (first boot or after NVS erase).
 //   Call once from setup() after WiFi has connected.
 // ---------------------------------------------------------------------------
 void httpServerInit();
 
 // ---------------------------------------------------------------------------
 // httpServerHandle
-//   Process pending HTTP requests.
-//   Must be called from loop() on every iteration.
+//   No-op stub — esp_https_server runs on its own FreeRTOS task.
+//   Retained so loop() callers compile without change.
 // ---------------------------------------------------------------------------
 void httpServerHandle();

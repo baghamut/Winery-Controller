@@ -9,7 +9,7 @@
 // ---------------------------------------------------------------------------
 // Firmware version
 // ---------------------------------------------------------------------------
-#define FW_VERSION  "3.5.9"
+#define FW_VERSION  "3.6.1"
 
 // ---------------------------------------------------------------------------
 // OTA firmware URL
@@ -195,7 +195,17 @@
 #define NVS_KEY_PRES_MAX   "presMax"      // safetyPresMaxBar (float)
 #define NVS_KEY_WIFI_SSID  "wifiSsid"     // WiFi SSID (String)
 #define NVS_KEY_WIFI_PASS  "wifiPass"     // WiFi password (String)
-// NVS_KEY_MASTER_POWER defined above (next to MASTER_POWER_DEFAULT)
+// NVS_KEY_MASTER_POWER defined above (next to MASTER_POWER_DEFAULT
+
+// ---------------------------------------------------------------------------
+// GoDaddy DDNS updater 
+// ---------------------------------------------------------------------------
+
+#define DDNS_HOSTNAME   "winery"           // subdomain only, not FQDN
+#define DDNS_DOMAIN     "baghamut.com"
+#define DDNS_API_KEY    "9Q5cAMRU3zD_411cCwCpBGBkRaZqiLBWBy"
+#define DDNS_API_SECRET "Jn66fxDkAi17zYrKXukUBJ"
+#define DDNS_UPDATE_INTERVAL_MS  (5 * 60 * 1000UL)   // every 5 minutes
 
 // ---------------------------------------------------------------------------
 // UI refresh

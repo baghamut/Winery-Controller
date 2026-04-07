@@ -4,3 +4,11 @@
 *.log
 config.h
 build/
+certs.h
+ca.key
+ca.crt
+ca.srl
+device.key
+device.crt
+device.csr
+san.ext
