@@ -12,12 +12,12 @@
 //  writes both to NVS, and reboots. After reboot the new cert is active.
 //  No firmware rebuild or USB cable required for cert renewal.
 //
-//  SSE  /events
-//  ────────────
-//  Sends full state JSON as Server-Sent Events every 1 s.
-//  The browser opens exactly one TLS session per tab for the lifetime of the
-//  tab, eliminating the per-poll handshake that was exhausting internal DRAM.
-//  GET /state is retained for the post-command immediate refresh.
+//  MULTI-CLIENT SUPPORT
+//  ────────────────────
+//  GET /state?client=monitor  — treated as non-interactive (monitor page)
+//  GET /state                 — treated as interactive (web_ui.html)
+//  GET /api/ping              — interactive keepalive, updates s_lastInteractiveMs
+//  interactiveActive field in /state JSON tells monitor page to back off polling.
 // =============================================================================
 
 #include "http_server.h"
@@ -50,6 +50,15 @@ static std::vector<uint8_t> s_key;
 static const char* NVS_CERT_NS  = "certs";
 static const char* NVS_KEY_CERT = "cert";
 static const char* NVS_KEY_KEY  = "key";
+
+// ---------------------------------------------------------------------------
+//  Interactive client tracking
+//  Updated by any /state fetch that is NOT ?client=monitor, and by /api/ping.
+//  s_lastInteractiveMs == 0  means "no interactive client seen yet" (boot state).
+//  All accesses are from the single httpd task, so no lock needed.
+// ---------------------------------------------------------------------------
+static uint32_t       s_lastInteractiveMs    = 0;
+static const uint32_t INTERACTIVE_TIMEOUT_MS = 90000UL;   // 3× the 30 s ping interval
 
 // ---------------------------------------------------------------------------
 //  certLoad / certSave / certLogExpiry
@@ -145,13 +154,12 @@ static void threshToJson(JsonObject obj, const SensorThresholds& t)
 
 // ---------------------------------------------------------------------------
 //  buildStateJson
-//  Shared by GET /state and GET /events.
+//  Shared by GET /state.
 //  Snapshots AppState, builds full JSON into static doc, serialises to out.
-//  Acquires s_jsonMutex for the build duration only — does not hold it
-//  across the network send or the SSE delay.
+//  Acquires s_jsonMutex for the build duration only.
 // ---------------------------------------------------------------------------
 
-static void buildStateJson(String& out)
+static void buildStateJson(String& out, bool isMonitorClient)
 {
     stateLock();
     AppState snap = g_state;
@@ -182,6 +190,18 @@ static void buildStateJson(String& out)
     doc["totalVolumeLiters"] = snap.totalVolumeLiters;
     doc["waterDephlLpm"]     = snap.waterDephlLpm;
     doc["waterCondLpm"]      = snap.waterCondLpm;
+
+    // Interactive client tracking — tells monitor page whether to back off polling.
+    // interactiveActive is false only when no non-monitor client has been seen within
+    // INTERACTIVE_TIMEOUT_MS, or on first boot before any client connects.
+    {
+        bool active = false;
+        if (s_lastInteractiveMs != 0) {
+            uint32_t age = (uint32_t)millis() - s_lastInteractiveMs;
+            active = (age < INTERACTIVE_TIMEOUT_MS);
+        }
+        doc["interactiveActive"] = active;
+    }
 
     JsonArray sensorRoms = doc["sensorRoms"].to<JsonArray>();
     for (int i = 0; i < MAX_SENSORS; i++) {
@@ -337,13 +357,32 @@ static void buildStateJson(String& out)
 }
 
 // ---------------------------------------------------------------------------
-//  GET /state  — single snapshot, used for post-command immediate refresh
+//  GET /state
+//  Parses ?client= query parameter.
+//  Any client that is NOT "monitor" counts as interactive and updates
+//  s_lastInteractiveMs.  The monitor page identifies itself as "monitor"
+//  so it does NOT update the timestamp and can receive interactiveActive=true.
 // ---------------------------------------------------------------------------
 
 static esp_err_t handle_get_state(httpd_req_t *req)
 {
+    // Parse ?client= query parameter
+    char query[64]     = {};
+    char clientVal[32] = {};
+    if (httpd_req_get_url_query_str(req, query, sizeof(query)) == ESP_OK) {
+        httpd_query_key_value(query, "client", clientVal, sizeof(clientVal));
+    }
+
+    bool isMonitor = (strcmp(clientVal, "monitor") == 0);
+
+    // Any non-monitor fetch counts as interactive activity.
+    if (!isMonitor) {
+        uint32_t now = (uint32_t)millis();
+        s_lastInteractiveMs = (now == 0) ? 1 : now;   // avoid 0 sentinel
+    }
+
     String output;
-    buildStateJson(output);
+    buildStateJson(output, isMonitor);
     httpd_resp_set_type(req, "application/json");
     httpd_resp_set_hdr(req, "Cache-Control", "no-store");
     httpd_resp_sendstr(req, output.c_str());
@@ -353,7 +392,24 @@ static const httpd_uri_t uri_get_state = {
     .uri = "/state", .method = HTTP_GET, .handler = handle_get_state, .user_ctx = NULL
 };
 
+// ---------------------------------------------------------------------------
+//  GET /api/ping
+//  Lightweight interactive keepalive.  The web UI sends this on load and
+//  every 30 s so that interactiveActive stays true even when the tab is
+//  backgrounded and JavaScript throttles the poll timer.
+// ---------------------------------------------------------------------------
 
+static esp_err_t handle_ping(httpd_req_t *req)
+{
+    uint32_t now = (uint32_t)millis();
+    s_lastInteractiveMs = (now == 0) ? 1 : now;
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    httpd_resp_sendstr(req, "OK");
+    return ESP_OK;
+}
+static const httpd_uri_t uri_ping = {
+    .uri = "/api/ping", .method = HTTP_GET, .handler = handle_ping, .user_ctx = NULL
+};
 
 // ---------------------------------------------------------------------------
 //  POST /
@@ -564,7 +620,6 @@ void httpServerInit()
     conf.port_secure            = 443;
 
     // 3 concurrent sockets: 1 active + 1 reconnecting + 1 for OTA/cert push.
-    // 3 sockets: 1 active request + 1 reconnect + 1 OTA/cert push
     conf.httpd.max_open_sockets = 3;
     conf.httpd.lru_purge_enable = true;
     conf.httpd.max_req_hdr_len  = 2048;
@@ -581,6 +636,7 @@ void httpServerInit()
     webUiRegisterHandlers(s_server);
     httpd_register_uri_handler(s_server, &uri_post_command);
     httpd_register_uri_handler(s_server, &uri_get_state);
+    httpd_register_uri_handler(s_server, &uri_ping);
     httpd_register_uri_handler(s_server, &uri_sensor_scan);
     httpd_register_uri_handler(s_server, &uri_flow_reset);
     httpd_register_uri_handler(s_server, &uri_update_cert);

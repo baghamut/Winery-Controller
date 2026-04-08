@@ -1,0 +1,634 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Monitor – Cask &amp; Crown</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico"/>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap');
+    body { font-family: Inter, system-ui, sans-serif; overflow: hidden; }
+
+    /* ── Sensor chips ─────────────────────────────────────────── */
+    .sensor-chip {
+      position: absolute;
+      min-width: 88px;
+      padding: 4px 8px 5px;
+      border-radius: 7px;
+      border: 1px solid rgba(255,255,255,0.12);
+      background: rgba(16,16,16,0.84);
+      backdrop-filter: blur(6px);
+      -webkit-backdrop-filter: blur(6px);
+      user-select: none;
+      touch-action: none;
+      z-index: 10;
+      transition: border-color 0.25s, box-shadow 0.25s;
+      /* positioned via left/top in px set by JS — never via CSS % */
+    }
+    .sensor-chip .chip-name {
+      font-size: 9px;
+      font-weight: 500;
+      letter-spacing: .04em;
+      color: #6b7280;
+      line-height: 1.3;
+      white-space: nowrap;
+      text-transform: uppercase;
+    }
+    .sensor-chip .chip-val {
+      font-size: 15px;
+      font-weight: 600;
+      color: #f5f5f5;
+      line-height: 1.25;
+      white-space: nowrap;
+    }
+
+    .chip-warn   .chip-val { color: #fb923c; }
+    .chip-danger .chip-val { color: #ef4444; animation: blink 1s ease-in-out infinite; }
+    .chip-offline { border-color: rgba(107,114,128,0.25) !important; }
+    .chip-offline .chip-name { color: #374151; }
+    .chip-offline .chip-val  { color: #374151; }
+    .chip-level-low .chip-val { color: #ef4444; }
+    .chip-level-ok  .chip-val { color: #4ade80; }
+
+    @keyframes blink { 50% { opacity: 0.35; } }
+
+    /* ── Edit mode ─────────────────────────────────────────────── */
+    #apparatus.edit-mode .sensor-chip {
+      cursor: grab;
+      border-color: rgba(251,146,60,0.65);
+      box-shadow: 0 0 10px rgba(251,146,60,0.22);
+    }
+    #apparatus.edit-mode .sensor-chip:active { cursor: grabbing; }
+
+    /* ── Background image ──────────────────────────────────────── */
+    /* object-fit:contain preserves aspect ratio with letterboxing.
+       This is what getImageRect() relies on to compute the real image rect. */
+    #bg-img {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      object-fit: contain;
+      object-position: center;
+      pointer-events: none;
+      user-select: none;
+    }
+
+    /* ── Connectivity dot ──────────────────────────────────────── */
+    #conn-dot {
+      width: 7px; height: 7px; border-radius: 50%;
+      background: #4b5563; display: inline-block; flex-shrink: 0;
+    }
+    #conn-dot.live { background: #22c55e; }
+    #conn-dot.dead { background: #ef4444; }
+
+    /* ── Poll badge ────────────────────────────────────────────── */
+    .poll-fast { background: rgba(31,41,55,0.8); color: #6b7280; }
+    .poll-slow { background: rgba(120,53,15,0.6); color: #fb923c; }
+  </style>
+</head>
+
+<body class="bg-[#0c0c0c] text-[#f5f5f5] h-screen select-none">
+
+  <!-- ══════════════════════════════════════ HEADER ══ -->
+  <div class="fixed top-0 inset-x-0 h-11 bg-[#161616]/96 backdrop-blur-md
+              border-b border-[#222] flex items-center gap-3 px-3 z-50">
+    <span id="conn-dot"></span>
+    <span class="font-semibold text-orange-400 text-sm shrink-0">Cask &amp; Crown</span>
+    <span class="text-gray-600 text-sm hidden sm:inline shrink-0">Monitor</span>
+    <span id="hdr-status"
+          class="px-2 py-0.5 rounded text-xs font-semibold bg-gray-800 text-gray-400 shrink-0">
+      STOPPED
+    </span>
+    <span id="hdr-max" class="text-xs text-gray-500 hidden sm:inline truncate"></span>
+    <div class="flex-1"></div>
+    <span id="poll-badge"
+          class="poll-fast text-xs px-1.5 py-0.5 rounded font-mono shrink-0">3s</span>
+    <button id="btn-reset"
+            class="hidden text-xs px-3 py-1 rounded border border-gray-700 text-gray-500
+                   hover:border-red-500 hover:text-red-400 transition-colors shrink-0"
+            onclick="resetPositions()">Reset</button>
+    <button id="btn-edit" onclick="toggleEdit()"
+            class="text-xs px-3 py-1 rounded border border-gray-600 text-gray-400
+                   hover:border-orange-400 hover:text-orange-400 transition-colors shrink-0">
+      Edit Layout
+    </button>
+    <a href="/"
+       class="text-xs px-3 py-1 rounded border border-gray-700 text-gray-500
+              hover:bg-gray-800 transition-colors shrink-0">
+      Full&nbsp;UI
+    </a>
+    <span id="hdr-ip" class="font-mono text-xs text-gray-600 hidden sm:inline shrink-0"></span>
+  </div>
+
+  <!-- ══════════════════════════════════════ APPARATUS ══ -->
+  <div id="apparatus" class="absolute inset-0 pt-11 pb-[4.5rem]">
+
+    <!-- Background image. object-fit:contain letterboxes to preserve aspect ratio.
+         getImageRect() computes the exact rendered image bounds inside this container. -->
+    <img id="bg-img" src="/Background.png" alt="" draggable="false"/>
+
+    <!-- Edit hint overlay -->
+    <div id="edit-hint"
+         class="hidden absolute top-2 left-1/2 -translate-x-1/2 z-30
+                text-xs text-orange-300 bg-orange-950/70 px-4 py-1 rounded-full
+                pointer-events-none backdrop-blur-sm">
+      Drag sensors onto the apparatus &bull; press "Done" to finish
+    </div>
+
+    <!-- Chip layer. pointer-events toggled by JS (none in view mode, auto in edit). -->
+    <div id="sensor-overlays" class="absolute inset-0" style="pointer-events:none;"></div>
+  </div>
+
+  <!-- ══════════════════════════════════════ BOTTOM BAR ══ -->
+  <div class="fixed bottom-0 inset-x-0 h-[4.5rem] bg-[#161616]/96 backdrop-blur-md
+              border-t border-[#222] flex items-center gap-4 px-4 z-50">
+    <div class="flex-col items-center shrink-0 hidden sm:flex">
+      <div class="text-orange-400 text-xs font-semibold">Power</div>
+    </div>
+    <div class="flex-1 flex items-center gap-3 min-w-0">
+      <input type="range" min="0" max="100" value="0" id="pwr-slider"
+             class="flex-1 accent-orange-400 h-2 min-w-0">
+      <span id="pwr-pct"
+            class="font-mono text-sm text-gray-300 w-10 text-right shrink-0">0%</span>
+    </div>
+    <div id="vol-box" class="hidden text-center shrink-0">
+      <div class="text-gray-600 text-xs">Volume</div>
+      <div id="vol-val" class="font-mono text-sm text-gray-300">-- L</div>
+    </div>
+    <button id="btn-stop" onclick="sendStop()"
+            class="hidden px-5 py-2 bg-red-600 hover:bg-red-500 rounded-xl
+                   font-semibold text-sm transition-colors shrink-0">
+      STOP
+    </button>
+  </div>
+
+<!-- ══════════════════════════════════════════════════════════ SCRIPT ══ -->
+<script>
+'use strict';
+
+// ─────────────────────────────────────────────────── SENSOR DEFINITIONS ──
+const SENSORS = [
+  { id:'room',     label:'Room',         key:'roomTemp',      kind:'temp',     coreIdx:0  },
+  { id:'kettle',   label:'Kettle',       key:'kettleTemp',    kind:'temp',     coreIdx:1  },
+  { id:'pillar1',  label:'Pillar 1',     key:'pillar1Temp',   kind:'temp',     coreIdx:2  },
+  { id:'pillar2',  label:'Pillar 2',     key:'pillar2Temp',   kind:'temp',     coreIdx:-1 },
+  { id:'pillar3',  label:'Pillar 3',     key:'pillar3Temp',   kind:'temp',     coreIdx:-1 },
+  { id:'dephlegm', label:'Dephlegmator', key:'dephlegmTemp',  kind:'temp',     coreIdx:-1 },
+  { id:'reflux',   label:'Reflux Cond.', key:'refluxTemp',    kind:'temp',     coreIdx:-1 },
+  { id:'product',  label:'Prod. Cooler', key:'productTemp',   kind:'temp',     coreIdx:-1 },
+  { id:'pressure', label:'Pressure',     key:'pressureBar',   kind:'pressure', coreIdx:-1 },
+  { id:'level',    label:'Level',        key:'levelHigh',     kind:'level',    coreIdx:-1 },
+  { id:'flow',     label:'Prod. Flow',   key:'flowRateLPM',   kind:'flow',     coreIdx:-1 },
+  { id:'wdephl',   label:'Water Dephl.', key:'waterDephlLpm', kind:'flow',     coreIdx:-1 },
+  { id:'wcond',    label:'Water Cond.',  key:'waterCondLpm',  kind:'flow',     coreIdx:-1 },
+];
+
+// Default positions as fractions of the RENDERED IMAGE (not the container).
+// x=0 left edge of image, x=1 right edge; same for y.
+// Operator drags to exact positions in edit mode; these are just first-run defaults.
+const DEFAULT_IMG_POS = {
+  room:     { x: 0.03, y: 0.08 },
+  kettle:   { x: 0.22, y: 0.72 },
+  pillar1:  { x: 0.22, y: 0.52 },
+  pillar2:  { x: 0.22, y: 0.34 },
+  pillar3:  { x: 0.22, y: 0.16 },
+  dephlegm: { x: 0.38, y: 0.05 },
+  reflux:   { x: 0.58, y: 0.05 },
+  product:  { x: 0.72, y: 0.42 },
+  pressure: { x: 0.10, y: 0.48 },
+  level:    { x: 0.03, y: 0.72 },
+  flow:     { x: 0.72, y: 0.68 },
+  wdephl:   { x: 0.55, y: 0.30 },
+  wcond:    { x: 0.72, y: 0.20 },
+};
+
+// ──────────────────────────────────────────────────── POSITION STORAGE ──
+// Stored as {x, y} fractions of the rendered image rectangle.
+// Converting back to px on every render/resize keeps chips anchored to the image
+// regardless of window size or letterbox amount.
+
+const POS_KEY = 'distill_monitor_imgpos_v1';
+
+function loadPos() {
+  try { return JSON.parse(localStorage.getItem(POS_KEY) || '{}'); }
+  catch { return {}; }
+}
+function savePos() {
+  try { localStorage.setItem(POS_KEY, JSON.stringify(savedPos)); }
+  catch {}
+}
+
+let savedPos = loadPos();
+function posFor(id) {
+  return savedPos[id] || DEFAULT_IMG_POS[id] || { x: 0.05, y: 0.05 };
+}
+
+// ──────────────────────────────────────── IMAGE RECT — the key function ──
+// Computes the bounding box of the rendered image inside #apparatus.
+// object-fit:contain letterboxes the image, so the rendered image is smaller
+// than the container with empty space on two sides.
+// All chip pixel positions are computed relative to this rect.
+
+function getImageRect() {
+  const img = document.getElementById('bg-img');
+  const app = document.getElementById('apparatus');
+  if (!img || !img.naturalWidth || !img.naturalHeight) return null;
+
+  const cw = app.clientWidth;
+  const ch = app.clientHeight;
+  const imgAspect = img.naturalWidth / img.naturalHeight;
+  const conAspect = cw / ch;
+
+  let rw, rh;
+  if (imgAspect > conAspect) {
+    // Image wider than container ratio → letterbox top/bottom
+    rw = cw;
+    rh = cw / imgAspect;
+  } else {
+    // Image taller → letterbox left/right
+    rh = ch;
+    rw = ch * imgAspect;
+  }
+
+  return {
+    x: (cw - rw) / 2,   // left offset of rendered image inside container
+    y: (ch - rh) / 2,   // top offset
+    w: rw,
+    h: rh,
+  };
+}
+
+// Image-fraction {x,y} → container px {left, top} for a chip of given size.
+function fracToPx(frac, chipW, chipH) {
+  const rect = getImageRect();
+  if (!rect) return { left: 8, top: 8 };
+  const app = document.getElementById('apparatus');
+  return {
+    left: Math.max(0, Math.min(app.clientWidth  - chipW, rect.x + frac.x * rect.w)),
+    top:  Math.max(0, Math.min(app.clientHeight - chipH, rect.y + frac.y * rect.h)),
+  };
+}
+
+// Container px position of chip top-left → image-fraction.
+function pxToFrac(pxLeft, pxTop) {
+  const rect = getImageRect();
+  if (!rect) return { x: 0.05, y: 0.05 };
+  return {
+    x: Math.max(0, Math.min(1, (pxLeft - rect.x) / rect.w)),
+    y: Math.max(0, Math.min(1, (pxTop  - rect.y) / rect.h)),
+  };
+}
+
+// ──────────────────────────────────────────────────────────── APP STATE ──
+let st        = null;
+let editMode  = false;
+let pollMs    = 3000;
+let pollTimer = null;
+const dragging = new Set();
+
+let pwrPending    = false;
+let pwrPendingVal = 0;
+let pwrTimer      = null;
+
+// ─────────────────────────────────────────────────────────── COMMANDS ──
+function send(cmd) {
+  return fetch('/', {
+    method: 'POST',
+    headers: { 'Content-Type': 'text/plain' },
+    body: cmd
+  }).catch(console.error);
+}
+function sendStop() {
+  send('STOP').then(() => setTimeout(poll, 350));
+}
+
+// ──────────────────────────────────────────────────────────── POLLING ──
+async function poll() {
+  try {
+    const r = await fetch('/state?client=monitor');
+    if (!r.ok) throw new Error(r.status);
+    st = await r.json();
+    setConn(true);
+    adjustRate();
+    renderAll();
+  } catch(e) {
+    setConn(false);
+  }
+}
+
+function adjustRate() {
+  const target = st?.interactiveActive ? 10000 : 3000;
+  if (target === pollMs) return;
+  pollMs = target;
+  clearInterval(pollTimer);
+  pollTimer = setInterval(poll, pollMs);
+  const badge = document.getElementById('poll-badge');
+  badge.textContent = (pollMs / 1000) + 's';
+  badge.className = (pollMs > 3000)
+    ? 'poll-slow text-xs px-1.5 py-0.5 rounded font-mono shrink-0'
+    : 'poll-fast text-xs px-1.5 py-0.5 rounded font-mono shrink-0';
+}
+
+function setConn(live) {
+  const d = document.getElementById('conn-dot');
+  if (d) d.className = live ? 'live' : 'dead';
+}
+
+// ────────────────────────────────────────────────── VALUE FORMATTING ──
+function fmtSensor(s, snap) {
+  const offT  = snap.tempOfflineThresh ?? -20;
+  const offFP = snap.flowOfflineThresh ?? -999;
+  const v     = snap[s.key];
+
+  if (s.kind === 'temp') {
+    if (v == null || v <= offT) return { text: 'Offline', cls: 'chip-offline' };
+    const pm  = snap.processMode || 0;
+    const thr = (pm === 2) ? snap.threshRect : snap.threshDist;
+    let warn = 9999, danger = 9999;
+    if (s.coreIdx >= 0 && thr) {
+      warn   = thr.tempWarn?.[s.coreIdx]   ?? 9999;
+      danger = thr.tempDanger?.[s.coreIdx] ?? 9999;
+    } else {
+      danger = snap.safetyTempMaxC ?? 95;
+      warn   = danger * 0.92;
+    }
+    const cls = v >= danger ? 'chip-danger' : v >= warn ? 'chip-warn' : '';
+    return { text: v.toFixed(1) + '\u00b0C', cls };
+  }
+
+  if (s.kind === 'pressure') {
+    if (v == null || v <= offFP) return { text: 'Offline', cls: 'chip-offline' };
+    const pm  = snap.processMode || 0;
+    const thr = (pm === 2) ? snap.threshRect : snap.threshDist;
+    const warn   = thr?.pressWarn   ?? 9999;
+    const danger = thr?.pressDanger ?? 9999;
+    const cls = v >= danger ? 'chip-danger' : v >= warn ? 'chip-warn' : '';
+    return { text: (v * 100).toFixed(2) + ' kPa', cls };
+  }
+
+  if (s.kind === 'level') {
+    return v
+      ? { text: 'Level OK',  cls: 'chip-level-ok'  }
+      : { text: 'Level LOW', cls: 'chip-level-low' };
+  }
+
+  if (s.kind === 'flow') {
+    if (v == null || v <= offFP) return { text: 'Offline', cls: 'chip-offline' };
+    return { text: v.toFixed(2) + ' L/m', cls: '' };
+  }
+
+  return { text: '--', cls: 'chip-offline' };
+}
+
+// ───────────────────────────────────────────────────────── RENDER ALL ──
+function renderAll() {
+  if (!st) return;
+
+  const sSt = document.getElementById('hdr-status');
+  if (sSt) {
+    if (st.safetyTripped) {
+      sSt.textContent = 'SAFETY TRIP';
+      sSt.className = 'px-2 py-0.5 rounded text-xs font-semibold bg-red-700 text-white shrink-0';
+    } else if (st.isRunning) {
+      sSt.textContent = 'RUNNING';
+      sSt.className = 'px-2 py-0.5 rounded text-xs font-semibold bg-green-700 text-white shrink-0';
+    } else {
+      sSt.textContent = 'STOPPED';
+      sSt.className = 'px-2 py-0.5 rounded text-xs font-semibold bg-gray-800 text-gray-400 shrink-0';
+    }
+  }
+
+  const maxEl = document.getElementById('hdr-max');
+  if (maxEl) {
+    if (st.safetyTripped && st.safetyMessage) {
+      maxEl.textContent = st.safetyMessage;
+      maxEl.className = 'text-xs text-red-400 hidden sm:inline truncate';
+    } else {
+      const offT = st.tempOfflineThresh ?? -20;
+      const all = [st.roomTemp, st.kettleTemp, st.pillar1Temp,
+                   st.pillar2Temp, st.pillar3Temp, st.dephlegmTemp,
+                   st.refluxTemp, st.productTemp].filter(v => v != null && v > offT);
+      maxEl.textContent = all.length ? 'Max ' + Math.max(...all).toFixed(1) + '\u00b0C' : '';
+      maxEl.className = 'text-xs text-gray-500 hidden sm:inline truncate';
+    }
+  }
+
+  const ipEl = document.getElementById('hdr-ip');
+  if (ipEl) ipEl.textContent = st.ip || '';
+
+  const stopBtn = document.getElementById('btn-stop');
+  if (stopBtn) stopBtn.classList.toggle('hidden', !st.isRunning);
+
+  const volBox = document.getElementById('vol-box');
+  const volVal = document.getElementById('vol-val');
+  if (volBox && volVal) {
+    const show = st.isRunning || (st.totalVolumeLiters > 0);
+    volBox.classList.toggle('hidden', !show);
+    volVal.textContent = (st.totalVolumeLiters || 0).toFixed(3) + ' L';
+  }
+
+  const pwr = Math.round(st.masterPower || 0);
+  if (pwrPending && pwr === pwrPendingVal) releasePwr();
+  if (!pwrPending) {
+    const sl = document.getElementById('pwr-slider');
+    const pc = document.getElementById('pwr-pct');
+    if (sl && parseInt(sl.value) !== pwr) sl.value = pwr;
+    if (pc) pc.textContent = pwr + '%';
+  }
+
+  renderChips();
+}
+
+// ──────────────────────────────────────────────────────── CHIP RENDER ──
+function renderChips() {
+  if (!st) return;
+  const container = document.getElementById('sensor-overlays');
+  if (!container) return;
+
+  SENSORS.forEach(s => {
+    let chip = document.getElementById('chip-' + s.id);
+
+    if (!chip) {
+      chip = document.createElement('div');
+      chip.id = 'chip-' + s.id;
+      chip.className = 'sensor-chip';
+      const nm = document.createElement('div');
+      nm.className = 'chip-name';
+      nm.textContent = s.label;
+      const vl = document.createElement('div');
+      vl.className = 'chip-val';
+      vl.textContent = '--';
+      chip.appendChild(nm);
+      chip.appendChild(vl);
+      container.appendChild(chip);
+      makeDraggable(chip, s.id);
+    }
+
+    // Update value and colour state
+    const { text, cls } = fmtSensor(s, st);
+    chip.querySelector('.chip-val').textContent = text;
+    chip.className = 'sensor-chip' + (cls ? ' ' + cls : '');
+
+    // Reposition from image-fraction (skip if chip is actively being dragged)
+    if (!dragging.has(s.id)) {
+      applyPos(chip, posFor(s.id));
+    }
+  });
+
+  container.style.pointerEvents = editMode ? 'auto' : 'none';
+}
+
+// Apply an image-fraction position to a chip in px.
+function applyPos(chip, frac) {
+  const px = fracToPx(frac, chip.offsetWidth || 88, chip.offsetHeight || 44);
+  chip.style.left = px.left + 'px';
+  chip.style.top  = px.top  + 'px';
+}
+
+// Reapply all positions — called on window resize.
+function repositionAll() {
+  SENSORS.forEach(s => {
+    const chip = document.getElementById('chip-' + s.id);
+    if (chip && !dragging.has(s.id)) applyPos(chip, posFor(s.id));
+  });
+}
+
+// ─────────────────────────────────────────── DRAG — image-relative ──
+// Positions are stored and dragged in image-fraction space.
+// On pointermove the pixel delta is converted to fraction delta using the
+// image rect at drag-start. This means even if the window resizes mid-drag
+// the stored position is always image-relative.
+
+function makeDraggable(el, id) {
+  let active      = false;
+  let startFrac   = null;   // image-fraction at drag start
+  let startRect   = null;   // image rect at drag start (px)
+  let startPtr    = null;   // pointer clientX/Y at drag start
+
+  el.addEventListener('pointerdown', e => {
+    if (!editMode) return;
+    e.preventDefault();
+    e.stopPropagation();
+    active    = true;
+    startFrac = { ...posFor(id) };
+    startRect = getImageRect();
+    startPtr  = { x: e.clientX, y: e.clientY };
+    dragging.add(id);
+    el.setPointerCapture(e.pointerId);
+    el.style.zIndex = '40';
+  });
+
+  el.addEventListener('pointermove', e => {
+    if (!active || !startRect) return;
+
+    // Convert pointer delta (px) to image-fraction delta
+    const dfx = (e.clientX - startPtr.x) / startRect.w;
+    const dfy = (e.clientY - startPtr.y) / startRect.h;
+
+    const newFrac = {
+      x: Math.max(0, Math.min(1, startFrac.x + dfx)),
+      y: Math.max(0, Math.min(1, startFrac.y + dfy)),
+    };
+
+    // Live visual update
+    applyPos(el, newFrac);
+
+    // Write to savedPos so resize during drag keeps chip correct
+    savedPos[id] = newFrac;
+  });
+
+  const endDrag = () => {
+    if (!active) return;
+    active = false;
+    el.style.zIndex = '';
+    dragging.delete(id);
+    savePos();
+  };
+
+  el.addEventListener('pointerup',     endDrag);
+  el.addEventListener('pointercancel', endDrag);
+}
+
+// ─────────────────────────────────────────────────────── EDIT MODE ──
+function toggleEdit() {
+  editMode = !editMode;
+  const btn  = document.getElementById('btn-edit');
+  const hint = document.getElementById('edit-hint');
+  const rst  = document.getElementById('btn-reset');
+  const app  = document.getElementById('apparatus');
+  const ol   = document.getElementById('sensor-overlays');
+
+  btn.textContent = editMode ? 'Done' : 'Edit Layout';
+  btn.className = editMode
+    ? 'text-xs px-3 py-1 rounded border border-orange-400 text-orange-400 transition-colors shrink-0'
+    : 'text-xs px-3 py-1 rounded border border-gray-600 text-gray-400 hover:border-orange-400 hover:text-orange-400 transition-colors shrink-0';
+
+  hint.classList.toggle('hidden', !editMode);
+  rst.classList.toggle('hidden', !editMode);
+  app.classList.toggle('edit-mode', editMode);
+  if (ol) ol.style.pointerEvents = editMode ? 'auto' : 'none';
+}
+
+function resetPositions() {
+  if (!confirm('Reset all sensor positions to defaults?')) return;
+  savedPos = {};
+  savePos();
+  repositionAll();
+}
+
+// ─────────────────────────────────────────────────── POWER SLIDER ──
+function setupSlider() {
+  const sl = document.getElementById('pwr-slider');
+  const pc = document.getElementById('pwr-pct');
+  if (!sl) return;
+  sl.addEventListener('input', () => {
+    pwrPendingVal = parseInt(sl.value);
+    pwrPending    = true;
+    clearTimeout(pwrTimer);
+    if (pc) pc.textContent = sl.value + '%';
+  });
+  sl.addEventListener('change', () => {
+    const v = parseInt(sl.value);
+    pwrPendingVal = v;
+    pwrPending    = true;
+    clearTimeout(pwrTimer);
+    if (pc) pc.textContent = v + '%';
+    send('MASTER:' + v);
+    pwrTimer = setTimeout(releasePwr, 3000);
+  });
+}
+function releasePwr() {
+  pwrPending = false;
+  clearTimeout(pwrTimer);
+  pwrTimer = null;
+}
+
+// ──────────────────────────────────────────────────────────── INIT ──
+// Wait for the background image to load before placing chips.
+// getImageRect() needs naturalWidth/naturalHeight to be non-zero.
+
+function startPolling() {
+  poll();
+  pollTimer = setInterval(poll, pollMs);
+}
+
+function init() {
+  setupSlider();
+  const img = document.getElementById('bg-img');
+  if (img.complete && img.naturalWidth) {
+    startPolling();
+  } else {
+    img.addEventListener('load',  startPolling, { once: true });
+    img.addEventListener('error', startPolling, { once: true }); // still start if image missing
+  }
+}
+
+// Reanchor all chips whenever window or container size changes.
+window.addEventListener('resize', repositionAll);
+
+window.addEventListener('DOMContentLoaded', init);
+</script>
+</body>
+</html>
