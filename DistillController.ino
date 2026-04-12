@@ -344,9 +344,36 @@ void setup()
     Serial.printf("[BOOT] Free heap: %u bytes\n", heap_caps_get_free_size(MALLOC_CAP_DEFAULT));
 
     // 1. Shared state + NVS
-    stateInit();
-    prefs.begin(NVS_NAMESPACE, false);
-    prefs.end();
+        stateInit();
+        prefs.begin(NVS_NAMESPACE, false);
+        prefs.end();
+
+// ============================================================
+// ONE-TIME NVS PROVISIONING — Cloudflare DDNS credentials
+// ============================================================
+// STEP 1: Fill in your real credentials below.
+// STEP 2: Uncomment the entire block (all lines below).
+// STEP 3: Flash the device. Confirm serial prints:
+//         [PROVISION] Cloudflare NVS written.
+// STEP 4: Comment the entire block back out (as it is now).
+//
+// WARNING: Never flash with PROVISION active and placeholder
+//          values — it will overwrite NVS with garbage.
+// ============================================================
+
+//#define PROVISION_CF_CREDENTIALS
+//#ifdef PROVISION_CF_CREDENTIALS
+//    {
+//        Preferences cfPrefs;
+//        cfPrefs.begin(NVS_NAMESPACE, false);
+//            cfPrefs.putString(NVS_KEY_CF_TOKEN, "YOUR_CF_TOKEN_HERE");
+//            cfPrefs.putString(NVS_KEY_CF_ZONE,  "a100a8349c139dda1b12c5f8eadbfaab");
+//            cfPrefs.putString(NVS_KEY_CF_REC,   "ec885ec7d4c5c68efd6d6d9dcf105bb5");
+//        cfPrefs.end();
+//        Serial.println("[PROVISION] Cloudflare NVS written. "
+//                       "Remove #define PROVISION_CF_CREDENTIALS and re-flash.");
+//    }
+//#endif
 
     // 2. LittleFS
     if (!LittleFS.begin(true)) {
@@ -445,7 +472,7 @@ void setup()
     Serial.println("[BOOT] mbedTLS → PSRAM allocator active");
 
     httpServerInit();
-    ddnsInit();   // GoDaddy DDNS updater, Core 0
+    ddnsInit();   // Cloudflare DDNS updater, Core 0
     otaInit();    // Pull OTA check task, Core 0
 
     // 12. LVGL handler task – Core 1, priority 1

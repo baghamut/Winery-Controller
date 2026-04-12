@@ -9,7 +9,7 @@
 // ---------------------------------------------------------------------------
 // Firmware version
 // ---------------------------------------------------------------------------
-#define FW_VERSION  "3.7.3"
+#define FW_VERSION  "3.7.6"
 
 // ---------------------------------------------------------------------------
 // OTA firmware URL
@@ -81,7 +81,7 @@
 #define EXPANDER_VALVE1   1   // Output – valve 1 (Dephlegmator)
 #define EXPANDER_VALVE2   2   // Output – valve 2 (Dripper)
 #define EXPANDER_VALVE3   3   // Output – valve 3 (Water)
-#define EXPANDER_SPARE4   4
+#define EXPANDER_SPARE4   4   // Output - valve 4 (reserved)
 #define EXPANDER_SPARE5   5
 #define EXPANDER_SPARE6   6
 #define EXPANDER_SPARE7   7
@@ -198,15 +198,21 @@
 // NVS_KEY_MASTER_POWER defined above (next to MASTER_POWER_DEFAULT
 
 // ---------------------------------------------------------------------------
-// GoDaddy DDNS updater 
+// Cloudflare DDNS updater
+//   Credentials are stored in NVS namespace "distill" — not in this file.
+//   Write them once via the PROVISION_CF_CREDENTIALS block in setup().
+//   NVS keys (all ≤15 chars):
+//     cf_token    – Cloudflare API token (Zone:DNS:Edit)
+//     cf_zone_id  – Zone ID for baghamut.com
+//     cf_rec_id   – DNS record ID for winery.baghamut.com
 // ---------------------------------------------------------------------------
+#define DDNS_HOSTNAME            "winery"               // subdomain only
+#define DDNS_DOMAIN              "baghamut.com"
+#define DDNS_UPDATE_INTERVAL_MS  (5 * 60 * 1000UL)     // every 5 minutes
 
-#define DDNS_HOSTNAME   "winery"           // subdomain only, not FQDN
-#define DDNS_DOMAIN     "baghamut.com"
-#define DDNS_API_KEY    "9Q5cAMRU3zD_411cCwCpBGBkRaZqiLBWBy"
-#define DDNS_API_SECRET "Jn66fxDkAi17zYrKXukUBJ"
-#define DDNS_UPDATE_INTERVAL_MS  (5 * 60 * 1000UL)   // every 5 minutes
-
+#define NVS_KEY_CF_TOKEN   "cf_token"     // Cloudflare API token
+#define NVS_KEY_CF_ZONE    "cf_zone_id"   // Zone ID
+#define NVS_KEY_CF_REC     "cf_rec_id"    // A record ID
 // ---------------------------------------------------------------------------
 // UI refresh
 // ---------------------------------------------------------------------------
