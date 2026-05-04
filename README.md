@@ -1,235 +1,85 @@
 # DistillController
 
-ESP32-S3 firmware for controlling a home rectification and distillation column.  
-Board: **JC3248W535EN** (3.5″ 480×320 IPS, landscape).  
-Current firmware: **3.6.1**
+ESP32-S3 firmware for a distillation / rectification column controller,
+running on the **JC3248W535EN** board (3.5″ 480 × 320 IPS touchscreen).
+
+| | |
+|---|---|
+| **Board** | JC3248W535EN (ESP32-S3, 16 MB flash, OPI PSRAM) |
+| **Display** | 480 × 320 IPS, landscape, capacitive touch |
+| **Framework** | Arduino ESP32 core v3.x, PlatformIO / arduino-cli |
+| **UI** | LVGL v9 (TFT) + Tailwind dark-theme web UI + always-on monitor page |
+| **Server** | `esp_https_server` (mbedTLS, port 443) |
+| **Connectivity** | Cloudflare DDNS, Let's Encrypt TLS, pull + push OTA |
+| **Domain** | `winery.baghamut.com` |
 
 ---
 
 ## 1. Hardware
 
-| Item | Detail |
+| Subsystem | Detail |
 |---|---|
-| MCU | ESP32-S3, OPI PSRAM |
-| Display | AXS15231B QSPI, 480×320 IPS, landscape |
-| Touch | AXS15231B I²C |
-| SSR outputs | 5× (GPIO 5/6/7/15/16), software time-proportional 2 s period |
-| Temperature | 8× DS18B20 on 1-Wire GPIO14, ROM-addressed |
-| Pressure | Analog, GPIO9 ADC |
-| Product flow | Hall-effect, GPIO46 hardware interrupt |
-| Expander 1 | PCF8574 @ 0x20 — kettle level switch + 3 valve outputs |
+| SSR Outputs | 5 × SSR, software time-proportional (2 s period / 100 ms tick via `esp_timer`), GPIO 5 / 6 / 7 / 15 / 16 |
+| Temperature | 8 × DS18B20 on 1-Wire GPIO 14, ROM-addressed (not index-based) |
+| Pressure | Analog sensor on GPIO 9 (ADC) |
+| Product Flow | Pulse sensor on GPIO 46 (hardware interrupt) |
+| Expander 1 | PCF8574 @ 0x20 — level switch (bit 0) + 3 valves (bits 1–3) |
 | Expander 2 | PCF8574 @ 0x21 — 2 water flow sensors polled every 2 ms |
-| I²C bus | GPIO17/18, shared, Wire mutex in `expander.cpp` |
+| I²C Bus | GPIO 17 (SDA) / GPIO 18 (SCL), shared, Wire mutex in `expander.cpp` |
 
-### DS18B20 slot map
+### DS18B20 Slot Assignments
 
-| Slot | Sensor |
-|---|---|
-| 0 | Room / ambient |
-| 1 | Kettle |
-| 2 | Pillar 1 |
-| 3 | Pillar 2 |
-| 4 | Pillar 3 |
-| 5 | Dephlegmator |
-| 6 | Reflux Condenser |
-| 7 | Product Cooler |
-
-### SSR → mode mapping
-
-| Mode | Active SSRs | GPIOs |
+| Slot | Name | Location |
 |---|---|---|
-| 1 — Distillation | SSR4, SSR5 | 15, 16 |
-| 2 — Rectification | SSR1, SSR2, SSR3 | 5, 6, 7 |
+| 0 | Room | Ambient |
+| 1 | Kettle | Boiler vessel |
+| 2 | Pillar 1 | Column bottom |
+| 3 | Pillar 2 | Column middle |
+| 4 | Pillar 3 | Column top |
+| 5 | Dephlegmator | Partial condenser |
+| 6 | Reflux | Reflux condenser |
+| 7 | Product Cooler | Product output cooler |
 
 ---
 
-## 2. Software stack
+## 2. Process Modes
 
-- Arduino ESP32 core v3.x  
-- LVGL v9  
-- FreeRTOS dual-core  
-- ArduinoJson v7  
-- OneWire + DallasTemperature  
-- `esp_https_server` (mbedTLS, port 443 only)  
-- LittleFS for web assets  
-- Tailwind CSS (CDN) for web UIs  
-
----
-
-## 3. Architecture
-
-### Shared state
-
-`AppState g_state` is the single source of truth. All tasks access it under `stateLock()` / `stateUnlock()`. Recommended pattern:
-
-```cpp
-stateLock();
-AppState snap = g_state;
-stateUnlock();
-// work on snap with no lock held
-```
-
-### FreeRTOS tasks
-
-| Task | Core | Priority | Stack |
+| Mode | Value | SSRs Active | Description |
 |---|---|---|---|
-| `sensorsTask` | 0 | 2 | 4096 |
-| `flow2PollTask` | 0 | 2 | 4096 |
-| `controlTask` | 0 | 3 | 4096 |
-| `ddnsTask` | 0 | 1 | 4096 |
-| `ota_pull` | 0 | 1 | 6144 |
-| `lvglTask` | 1 | 1 | 8192 |
-| `esp_https_server` | — | — | 8192 |
-| Arduino `loop()` | 1 | — | — |
+| Off | 0 | None | Idle — no heaters, valves close |
+| Distillation | 1 | SSR 4–5 | Simple pot still run |
+| Rectification | 2 | SSR 1–3 | Column rectification run |
 
-### Control logic
-
-`controlTask` runs every 500 ms:
-1. Safety check — trips and shuts down on over-temp or over-pressure.
-2. `applySsrFromState()` — writes duty cycle to all active SSRs.
-3. `valveEvaluateAll()` — evaluates all valve rules regardless of run state.
-4. Increments `timerElapsedMs` while running.
-
-All active SSRs for the selected mode receive the **same** `masterPower` duty cycle (0–100 %). No per-SSR control.
-
-### Wire bus
-
-The I²C bus is shared by both PCF8574 expanders. A mutex in `expander.cpp` (`s_wireMutex`) protects all `Wire` transactions from `sensorsTask`, `controlTask`, and `flow2PollTask`.
+`STOP` resets mode to 0, power to 0, and clears any safety trip. `START` requires mode ≠ 0, `masterPower > 0`, and no active safety trip.
 
 ---
 
-## 4. User interfaces
+## 3. Safety System
 
-Both UIs derive all state from `/state` JSON and send the same command strings to `handleCommand()`. They are always in sync.
+`controlTask` runs a safety check every 500 ms. If any **online** sensor exceeds its configured danger threshold, or if `safetyTempMaxC` / `safetyPresMaxBar` global limits are breached:
 
-### TFT display (LVGL v9, 480×320 landscape)
+1. All SSRs set to 0 %.
+2. `safetyTripped = true`, `safetyMessage` set to the trigger reason.
+3. `isRunning = false`.
+4. Safety latch remains until `MODE:0` or `STOP` clears it.
 
-**Header** — always visible: status badge, room temp, max active temp, total volume, IP address (tap to open WiFi config).
+Offline sensors (reading `TEMP_OFFLINE_THRESH = −20.0` or `SENSOR_OFFLINE = −999.0`) never trigger safety conditions.
 
-**Mode screen** — two large buttons: Rectification (left, SSR1–3) and Distillation (right, SSR4–5).
+### Temperature Sensor Debounce
 
-**Control screen** — Master Power slider, sensor danger threshold rows (Pressure / Kettle / Pillar 1), BACK and START buttons.
-
-**Monitor screen** — live readings for all sensors, Master Power slider, STOP button.
-
-**WiFi panel** — SSID / password overlay, opened by tapping the IP address.
-
-**Tmax panel** — numeric keyboard overlay for per-sensor danger threshold editing.
-
-Screen transitions are driven exclusively by `/state` fields (`processMode`, `isRunning`). Overlay panels suppress automatic transitions while open.
-
-### Web UI (`/` — `web_ui.html`)
-
-Full interactive control interface. Polls `/state?client=interactive` every 1 s. Sends `GET /api/ping` on load and every 30 s as a keepalive so the server knows an interactive operator is present.
-
-Screens: Mode Select → Control (power slider, threshold editing, sensor mapper, valve config) → Monitor (live readings, power slider, STOP).
-
-### Monitor page (`/monitor.html`)
-
-Always-on graphical monitoring page, designed for a wall-mounted screen. Not a full control interface.
-
-- **Background**: apparatus schematic image with sensor data chips overlaid at physical positions.
-- **Sensor chips**: all 13 sensor readings with warn/danger colour coding matching thresholds from `/state`.
-- **Drag-and-drop layout**: edit mode lets the operator drag each sensor chip to its physical position on the image. Positions persist in browser `localStorage`.
-- **Adaptive polling**: 3 s normally; backs off to 10 s when `interactiveActive` is `true` (an interactive operator is active on `web_ui.html`). Poll-rate badge in header shows current interval.
-- **Limited controls**: Master Power slider (debounced, 3 s lock after release) and STOP button (visible only when `isRunning` is `true`). No START, no mode select, no threshold editing.
-- **Client identification**: fetches `/state?client=monitor` — does NOT update `interactiveActive` on the server.
-
-### Multi-client design
-
-The server tracks the last time a non-monitor client fetched `/state` or hit `/api/ping`, exposed as `interactiveActive` (boolean) in every `/state` response. The monitor page uses this to self-throttle. The 3 available TLS sockets are thus never all held simultaneously by monitor polls.
+A single missed read holds the last known good value silently. After 3 consecutive misses the sensor goes to `TEMP_OFFLINE_THRESH`. Any valid read restores the sensor instantly and resets the miss counter. This prevents transient 1-Wire glitches from flickering the display or triggering false safety trips.
 
 ---
 
-## 5. HTTP API
+## 4. Valve Automation
 
-Server runs on **port 443 (HTTPS only)** via `esp_https_server`. Port 80 is not open.
+Five valves (3 physical on expander 1, 2 placeholder). Each valve has an independent open-condition and close-condition, both configurable via `VALVE:N:OPENCFG:` / `VALVE:N:CLOSECFG:` commands.
 
-| Method | Path | Description |
-|---|---|---|
-| `GET` | `/` | `web_ui.html` from LittleFS (fallback: inline page) |
-| `GET` | `/monitor.html` | `monitor.html` from LittleFS |
-| `GET` | /Background.png | Apparatus background image from LittleFS, 24 h cache |
-| `POST` | `/` | Plain-text command (`Content-Type: text/plain`) |
-| `GET` | `/state` | Full JSON state + labels + catalog |
-| `GET` | `/api/ping` | Interactive keepalive — updates `interactiveActive` timestamp |
-| `GET` | `/Barrel_Big.png` | LittleFS asset, 24 h cache |
-| `GET` | `/favicon.ico` | LittleFS asset, 24 h cache |
-| `POST` | `/api/flow_reset` | Reset `totalVolumeLiters` to 0 |
-| `POST` | `/api/sensor_scan` | Rescan 1-Wire bus, return ROM list |
-| `POST` | `/api/update_cert` | Push new TLS cert+key JSON to NVS, reboot |
-| `POST` | `/ota` | Flash firmware binary, reboot |
+### Evaluation
 
-### `/state` — selected fields
+`valveEvaluateAll()` runs every 500 ms regardless of `isRunning` or `processMode`. Offline sensors never trigger conditions. Close takes priority over open if both conditions fire simultaneously.
 
-```json
-{
-  "fw": "3.6.1",
-  "isRunning": false,
-  "processMode": 1,
-  "masterPower": 65.0,
-  "interactiveActive": true,
-  "roomTemp": 22.4,
-  "kettleTemp": 78.1,
-  "pillar1Temp": 76.3,
-  "pillar2Temp": -20.0,
-  "pillar3Temp": -20.0,
-  "dephlegmTemp": -20.0,
-  "refluxTemp": -20.0,
-  "productTemp": -20.0,
-  "pressureBar": 0.042,
-  "levelHigh": true,
-  "flowRateLPM": 0.12,
-  "totalVolumeLiters": 3.450,
-  "waterDephlLpm": -999.0,
-  "waterCondLpm": -999.0,
-  "threshDist": { "tempWarn": [80,80,80], "tempDanger": [92,92,92], "pressWarn": 0.06, "pressDanger": 0.08 },
-  "threshRect": { "tempWarn": [78,78,78], "tempDanger": [88,88,88], "pressWarn": 0.06, "pressDanger": 0.08 },
-  "safetyTempMaxC": 95.0,
-  "safetyPresMaxBar": 0.09,
-  "safetyTripped": false,
-  "safetyMessage": "",
-  "tempOfflineThresh": -20.0,
-  "pressureOfflineThresh": -999.0,
-  "flowOfflineThresh": -999.0
-}
-```
-
-Offline sentinels: `TEMP_OFFLINE_THRESH = -20.0`, `SENSOR_OFFLINE = -999.0`.  
-Pressure is displayed in kPa in both UIs; stored internally in bar.
-
----
-
-## 6. Command reference
-
-All commands are plain UTF-8 strings sent via `POST /` with `Content-Type: text/plain`, or issued from the LVGL UI via `handleCommand()`.
-
-| Command | Description |
-|---|---|
-| `MODE:0` | Switch to Off — stops run, resets power, clears safety latch |
-| `MODE:1` | Select Distillation (SSR4–5) |
-| `MODE:2` | Select Rectification (SSR1–3) |
-| `MASTER:NN.N` | Set master power 0–100 % — applies to SSRs immediately |
-| `START` | Start process (requires mode ≠ 0, masterPower > 0, no safety trip) |
-| `STOP` | Stop process, reset mode to 0, clear safety, zero masterPower |
-| `TMAX:NN.N` | Set `safetyTempMaxC` absolutely or ±relatively |
-| `TMAX:N:SET:val` | Set per-sensor danger threshold for active mode (N = 1–3) |
-| `THRESH:D/R:TW/TD:N:val` | Set temp warn/danger threshold for sensor N (0-based) |
-| `THRESH:D/R:PW/PD:val` | Set pressure warn/danger threshold |
-| `VALVE:N:OPENCFG:sId:op:val` | Configure valve N open condition |
-| `VALVE:N:CLOSECFG:sId:op:val` | Configure valve N close condition |
-| `SENSOR:MAP:N:ROMHEX` | Assign DS18B20 ROM to sensor slot N |
-| `WIFI:SET:ssid:pass` | Update WiFi credentials and reconnect (percent-encode `:`) |
-
-**Valve operators:** `GT` `LT` `GTE` `LTE` `EQ` `NONE`
-
----
-
-## 7. Valve subsystem
-
-`valveEvaluateAll()` runs every 500 ms regardless of `isRunning` or `processMode`. Offline sensors never trigger conditions. Close takes priority over open when both conditions fire simultaneously.
-
-### Sensor catalog
+### Sensor Catalog (valve rule sensor IDs)
 
 | ID | Name | Kind | Enabled |
 |---|---|---|---|
@@ -253,9 +103,65 @@ All commands are plain UTF-8 strings sent via `POST /` with `Content-Type: text/
 
 ---
 
-## 8. NVS persistence
+## 5. Flow Counter
 
-### `"distill"` namespace
+The product flow sensor counts pulses via hardware interrupt on GPIO 46. `totalVolumeLiters` accumulates during a run. On `START`, the current total is saved to `lastRunVolumeLiters` and then `totalVolumeLiters` resets to 0. After `STOP`, the header area shows the frozen `lastRunVolumeLiters` so operators can read the final volume of the completed run. `POST /api/flow_reset` resets `totalVolumeLiters` to 0 manually.
+
+---
+
+## 6. User Interfaces
+
+Both UIs read from the same `/state` JSON and send the same text commands. They are always in sync with backend state. The UI never computes or stores its own process state.
+
+### TFT Display (LVGL v9, 480 × 320 landscape)
+
+**Header** — always visible: app title, status badge (RUNNING / STOPPED / SAFETY TRIP), room temperature, max active temperature, IP address.
+
+**Mode Screen** — two large buttons to select Distillation or Rectification.
+
+**Control Screen** — shows mode title, Master Power slider (0–100 %), editable sensor danger threshold rows (Pressure / Kettle / Pillar 1), BACK and START buttons.
+
+**Monitor Screen** — live readings for all three core temperature sensors, pressure, level, flow rate, total volume (or last-run volume when stopped), Master Power slider, STOP button.
+
+**WiFi Panel** — SSID / password entry, triggered from the IP address in the header.
+
+**Tmax Panel** — numeric keyboard overlay for editing per-sensor danger thresholds.
+
+Screen transitions are driven exclusively by `/state` fields (`processMode`, `isRunning`). Overlay panels (WiFi, Tmax) suppress automatic transitions while open.
+
+### Web UI (`data/web_ui.html`, Tailwind CSS dark theme)
+
+Served from LittleFS at `GET /`, fully self-contained except Tailwind via `cdn.tailwindcss.com`. Falls back to a minimal inline page if the LittleFS file is missing.
+
+**Screen 0 — Mode Select** — two clickable cards.
+
+**Screen 1 — Control** — Master Power slider, sensor threshold rows, BACK / START buttons. Header buttons: **Sensors** (opens sensor mapper modal) and **Valves Control** (switches to Screen 3).
+
+**Screen 2 — Monitor** — live sensor readings with warn/danger colour coding, Master Power slider, STOP button.
+
+**Screen 3 — Valves Control** — per-valve cards showing current open/closed state badge (updated every poll), sensor dropdown, operator dropdown, threshold value input, and SET button. Dropdowns are never rebuilt during polling — only the state badge is updated, so open dropdowns stay stable.
+
+**Sensor Mapper Modal** — SCAN BUS button calls `/api/sensor_scan`. Each of the 8 DS18B20 slots shows its current ROM hex, a dropdown of detected ROMs, and a SET button sending `SENSOR:MAP:N:ROMHEX`.
+
+**WiFi Modal** — SSID / password fields, opened by clicking the IP address in the header.
+
+The web UI polls `/state` every 3 seconds. All display labels come from the `/state` JSON so that changing a string in `ui_strings.h` propagates to both UIs automatically. Commands are sent as raw text with `Content-Type: text/plain` via `POST /`.
+
+### Monitor Page (`data/monitor.html`)
+
+A dedicated always-on page for wall-mounted screens, served from LittleFS at `GET /monitor.html`. Shows a background image of the physical apparatus (`Background.png`) with draggable sensor overlays positioned at the physical sensor locations. Overlay positions are saved to `localStorage`.
+
+**Controls**: Master Power slider and STOP button only — the monitor page cannot start a process or change mode.
+
+**Adaptive Polling**: Identifies itself via `?client=monitor` query parameter. When an interactive client (web UI) is active, the monitor backs off to 10-second polling to reduce server load. When no interactive client is active, it polls at the normal 3-second interval.
+
+**Client tracking**: The server tracks `s_lastInteractiveMs` — updated on every `/state` request from a non-monitor client. The `/state` response includes `interactiveActive` (true if an interactive client was seen within the last 15 seconds). `GET /api/ping` is available for lightweight keep-alive.
+
+---
+
+## 7. NVS Persistence
+
+### `"distill"` Namespace
 
 | Key | Type | Contents |
 |---|---|---|
@@ -266,25 +172,28 @@ All commands are plain UTF-8 strings sent via `POST /` with `Content-Type: text/
 | `lastTankC` | float | kettleTemp at last save |
 | `tempMax` | float | safetyTempMaxC |
 | `presMax` | float | safetyPresMaxBar |
-| `tw_d0`–`tw_d2` | float | Distillation temp warn |
-| `td_d0`–`td_d2` | float | Distillation temp danger |
-| `tw_r0`–`tw_r2` | float | Rectification temp warn |
-| `td_r0`–`td_r2` | float | Rectification temp danger |
+| `tw_d0`–`tw_d2` | float | Distillation temp warn thresholds |
+| `td_d0`–`td_d2` | float | Distillation temp danger thresholds |
+| `tw_r0`–`tw_r2` | float | Rectification temp warn thresholds |
+| `td_r0`–`td_r2` | float | Rectification temp danger thresholds |
 | `pw_d`, `pd_d` | float | Distillation pressure warn/danger |
 | `pw_r`, `pd_r` | float | Rectification pressure warn/danger |
-| `rom0`–`rom7` | bytes[8] | DS18B20 ROM per slot |
-| `v0os`–`v4os` | uint8 | Valve open sensor ID |
-| `v0oo`–`v4oo` | uint8 | Valve open operator |
-| `v0ov`–`v4ov` | float | Valve open threshold |
-| `v0cs`–`v4cs` | uint8 | Valve close sensor ID |
-| `v0co`–`v4co` | uint8 | Valve close operator |
-| `v0cv`–`v4cv` | float | Valve close threshold |
+| `rom0`–`rom7` | bytes[8] | DS18B20 ROM address per sensor slot |
+| `v0os`–`v4os` | uint8 | Valve open-condition sensorId |
+| `v0oo`–`v4oo` | uint8 | Valve open-condition operator |
+| `v0ov`–`v4ov` | float | Valve open-condition value |
+| `v0cs`–`v4cs` | uint8 | Valve close-condition sensorId |
+| `v0co`–`v4co` | uint8 | Valve close-condition operator |
+| `v0cv`–`v4cv` | float | Valve close-condition value |
 | `wifiSsid` | String | WiFi SSID |
 | `wifiPass` | String | WiFi password |
+| `cf_token` | String | Cloudflare API token |
+| `cf_zone_id` | String | Cloudflare Zone ID |
+| `cf_rec_id` | String | Cloudflare DNS record ID |
 
-`valveOpen[]` and live sensor readings are **not** persisted — valves always start closed on boot.
+`valveOpen[]` and all live sensor readings are **not** persisted — valves always start closed on boot.
 
-### `"certs"` namespace
+### `"certs"` Namespace
 
 | Key | Type | Contents |
 |---|---|---|
@@ -295,44 +204,196 @@ Falls back to compiled-in `certs.h` when NVS is empty (first boot or after NVS e
 
 ---
 
-## 9. File reference
+## 8. HTTP API
 
-| File | Role |
-|---|---|
-| `DistillController.ino` | Boot sequence, WiFi, mbedTLS PSRAM redirect, tasks |
-| `config.h` | Pin assignments, timing constants, default thresholds |
-| `ui_strings.h` | All display strings for both LVGL and web UI |
-| `state.h` / `state.cpp` | AppState, mutex helpers, NVS load/save, sensor catalog |
-| `sensors.h` / `sensors.cpp` | DS18B20, pressure, flow, level drivers |
-| `expander.h` / `expander.cpp` | PCF8574 drivers, Wire mutex, `flow2PollTask` |
-| `ssr.h` / `ssr.cpp` | Software time-proportional SSR driver (esp_timer, 5 outputs) |
-| `control.h` / `control.cpp` | Safety check, SSR apply, valve evaluation, command parser |
-| `http_server.h` / `http_server.cpp` | HTTPS routes, `/state` serialiser, interactive tracking, cert NVS |
-| `web_ui.h` / `web_ui.cpp` | LittleFS file streaming for all web assets |
-| `ddns.h` / `ddns.cpp` | GoDaddy DNS A-record updater (FreeRTOS task, Core 0) |
-| `ota.h` / `ota.cpp` | Pull OTA from GitHub Releases (30 min check, stopped only) |
-| `certs.h` | Compiled-in fallback TLS cert |
-| `ui_lvgl.h` / `ui_lvgl.cpp` | LVGL panel layout, widget updates, screen transitions |
-| `data/web_ui.html` | Interactive web UI — served from LittleFS at `/` |
-| `data/monitor.html` | Always-on monitor page — served from LittleFS at `/monitor.html` |
-| `data/Barrel_Big.png` | Barrel graphic — served from LittleFS, also loaded by LVGL |
-| `data/favicon.ico` | Browser favicon |
-| `version.json` | Repo root — updated by `bump-push-release.sh` on each release |
-| `renew-winery-cert.sh` | macOS cron script: certbot renewal + cert push to device |
-| `bump-push-release.sh` | Version bump, git commit, GitHub release, OTA binary build |
-| `data/Background.png` | Apparatus background image for monitor page — served from LittleFS at `/Background.png` |
+All endpoints are HTTPS (port 443). The server uses `esp_https_server` with mbedTLS.
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/` | Serves the web UI from LittleFS (`web_ui.html`) |
+| `POST` | `/` | Send a plain-text command (body = raw command string) |
+| `GET` | `/state` | Full JSON state + labels + catalog |
+| `GET` | `/monitor.html` | Serves the monitor page from LittleFS |
+| `GET` | `/Background.png` | Monitor background image from LittleFS |
+| `GET` | `/Barrel_Big.png` | Barrel graphic from LittleFS |
+| `GET` | `/Logo.png` | Logo graphic from LittleFS |
+| `GET` | `/favicon.ico` | Browser favicon from LittleFS |
+| `GET` | `/api/ping` | Lightweight keep-alive (returns `{"ok":true}`) |
+| `POST` | `/api/flow_reset` | Reset `totalVolumeLiters` to 0 |
+| `POST` | `/api/sensor_scan` | Rescan 1-Wire bus, return ROM list |
+| `POST` | `/api/ota/trigger` | Wake pull-OTA task for immediate version check |
+| `POST` | `/api/ota/upload` | Push OTA — multipart upload of `.bin` firmware |
+| `POST` | `/api/update_cert` | Push new TLS cert + key (JSON body: `{"cert":"...","key":"..."}`) |
+
+### `/state` JSON Fields (selected)
+
+```json
+{
+  "fw": "3.5.8",
+  "isRunning": false,
+  "processMode": 1,
+  "masterPower": 65.0,
+  "roomTemp": 22.4,
+  "kettleTemp": 78.1,
+  "pillar1Temp": 76.3,
+  "pillar2Temp": -20.0,
+  "pillar3Temp": -20.0,
+  "dephlegmTemp": -20.0,
+  "refluxTemp": -20.0,
+  "productTemp": -20.0,
+  "pressureBar": 0.042,
+  "levelHigh": true,
+  "flowRateLPM": 0.12,
+  "totalVolumeLiters": 3.450,
+  "lastRunVolumeLiters": 2.100,
+  "waterDephlLpm": -999.0,
+  "waterCondLpm": -999.0,
+  "interactiveActive": false,
+  "sensorRoms": ["28AABBCCDDEEFF01", "28FF112233445506", "", "", "", "", "", ""],
+  "tempSensorSlotNames": ["Room", "Kettle", "Pillar 1", "Pillar 2", "Pillar 3", "Dephlegmator", "Reflux Cond.", "Product Cooler"],
+  "valveRules": [
+    { "openWhen": { "sensorId": 2, "op": 1, "value": 78.5 }, "closeWhen": { "sensorId": 2, "op": 2, "value": 77.0 } }
+  ],
+  "valveOpen": [false, false, false, false, false],
+  "valveNames": ["Dephlegmator", "Dripper", "Water", "Placeholder 1", "Placeholder 2"],
+  "ruleSensors": [ { "id": 1, "kind": 1, "label": "Room Temp", "unit": "°C", "enabled": true }, "..." ],
+  "threshDist": { "tempWarn": [80, 80, 80], "tempDanger": [92, 92, 92], "pressWarn": 0.06, "pressDanger": 0.08 },
+  "threshRect": { "tempWarn": [78, 78, 78], "tempDanger": [88, 88, 88], "pressWarn": 0.06, "pressDanger": 0.08 },
+  "safetyTempMaxC": 95.0,
+  "safetyPresMaxBar": 0.09,
+  "safetyTripped": false,
+  "safetyMessage": ""
+}
+```
+
+Offline sentinels: `TEMP_OFFLINE_THRESH = -20.0`, `SENSOR_OFFLINE = -999.0`. The JSON exports `tempOfflineThresh`, `pressureOfflineThresh`, `flowOfflineThresh` so the web UI never hardcodes these values.
 
 ---
 
-## 10. Building
+## 9. Command Reference
+
+All commands are plain UTF-8 strings sent via `POST /` with the command as the raw request body (`Content-Type: text/plain`), or issued directly from the LVGL UI via `handleCommand()`. Both UIs use the identical command strings.
+
+| Command | Description |
+|---|---|
+| `MODE:0` | Switch to Off. Stops run, resets masterPower, clears safety latch |
+| `MODE:1` | Select Distillation mode |
+| `MODE:2` | Select Rectification mode |
+| `MASTER:NN.N` | Set master power to NN.N % (0–100). Applies to SSRs immediately |
+| `START` | Start the process (requires mode ≠ 0, masterPower > 0, no safety trip). Saves current `totalVolumeLiters` to `lastRunVolumeLiters` and resets flow counter to 0 |
+| `STOP` | Stop process, reset mode to 0, reset masterPower to 0, clear safety |
+| `TMAX:NN.N` | Set `safetyTempMaxC` absolutely or ±relatively (e.g. `TMAX:+2`) |
+| `TMAX:N:SET:val` | Set per-sensor danger threshold for active mode. N = 1, 2, or 3 |
+| `THRESH:D:TW:N:val` | Set Distillation temp warn for sensor N (0-based) |
+| `THRESH:D:TD:N:val` | Set Distillation temp danger for sensor N |
+| `THRESH:R:TW:N:val` | Set Rectification temp warn for sensor N |
+| `THRESH:R:TD:N:val` | Set Rectification temp danger for sensor N |
+| `THRESH:D:PW:val` | Set Distillation pressure warn |
+| `THRESH:D:PD:val` | Set Distillation pressure danger |
+| `THRESH:R:PW:val` | Set Rectification pressure warn |
+| `THRESH:R:PD:val` | Set Rectification pressure danger |
+| `VALVE:N:OPENCFG:sensorId:op:value` | Configure valve N open condition |
+| `VALVE:N:CLOSECFG:sensorId:op:value` | Configure valve N close condition |
+| `SENSOR:MAP:N:ROMHEX` | Assign DS18B20 ROM to sensor slot N. ROMHEX = 16 hex chars |
+| `WIFI:SET:ssid:pass` | Update WiFi credentials and reconnect. `:` is the delimiter — percent-encode any literal `:` in the SSID or password (e.g. `%3A`). The web UI applies `encodeURIComponent()` automatically; the LVGL panel uses an equivalent `urlEncode()` helper. The firmware decodes both fields with `urlDecodeString()` before saving |
+
+**Valve operator strings for `VALVE:` commands:**
+
+| String | Meaning |
+|---|---|
+| `GT` | > |
+| `LT` | < |
+| `GTE` | >= |
+| `LTE` | <= |
+| `EQ` | == (±0.001 float tolerance) |
+| `NONE` | Disabled (condition never triggers) |
+
+---
+
+## 10. Architecture
+
+### FreeRTOS Tasks
+
+| Task | Core | Priority | Stack | Function |
+|---|---|---|---|---|
+| `sensorsTask` | 0 | 2 | 4096 | DS18B20 (with debounce), pressure, level, product flow; triggers LVGL refresh |
+| `flow2PollTask` | 0 | 2 | 4096 | Polls expander 2 every 2 ms for water flow pulses |
+| `controlTask` | 0 | 3 | 4096 | Safety check, SSR apply, valve evaluation every 500 ms |
+| `ddnsTask` | 0 | 1 | 8192 | Cloudflare DDNS A-record updater (every 5 min, changed-IP only) |
+| `otaPullTask` | 0 | 1 | 8192 | Pull OTA from GitHub Releases (30 min check, stopped-only) |
+| `lvglTask` | 1 | 1 | 8192 | LVGL handler; calls `lv_timer_handler()` |
+| `esp_https_server` | — | — | 12288 | mbedTLS HTTPS server (internal task, not user-created) |
+| Arduino `loop()` | 1 | — | — | HTTP client handling, LVGL refresh trigger, WiFi IP sync |
+
+### Shared State
+
+`AppState g_state` is the single source of truth. All tasks access it under `stateLock()` / `stateUnlock()` (FreeRTOS mutex). The recommended pattern is snapshot-then-release:
+
+```cpp
+stateLock();
+AppState snap = g_state;
+stateUnlock();
+// use snap safely with no lock held
+```
+
+NVS writes must not occur on the LVGL task (e.g. slider release callbacks). Use the command queue pattern: `g_cmdQueue` is drained in `loop()` to decouple LVGL callbacks from NVS writes.
+
+### UI Alignment
+
+Both UIs derive all displayed values from `/state` JSON (web) or from an `AppState` snapshot (LVGL). Neither UI holds its own process state. String labels are centralised in `ui_strings.h`. DS18B20 slot names and all common UI labels are exported as top-level fields in `/state` JSON. Non-temperature sensor labels are available via the `ruleSensors[]` array, which the web UI reads by `RuleSensorId` — new sensors become visible in the monitor automatically when enabled in `g_ruleSensors` without any JS change.
+
+### HTTPS Server
+
+`esp_https_server` (mbedTLS) serves all HTTP endpoints on port 443. All mbedTLS allocations (SSL record buffers, handshake state, certificate parsing — ~40 KB per session) are redirected to PSRAM via `mbedtls_platform_set_calloc_free()`, keeping internal DRAM free for lwIP and FreeRTOS. TLS sessions are capped at 3 concurrent connections (`max_open_sockets = 3`) with LRU eviction enabled. TCP accept backlog is limited to 1 to prevent concurrent handshake storms. TLS session tickets are disabled to save ~10 KB DRAM per session. Request header buffer is 2048 bytes.
+
+### Wire Bus Sharing
+
+The I²C bus (IO17/IO18) is shared by expander 1 (0x20), expander 2 (0x21), and optionally future devices. A mutex in `expander.cpp` (`s_wireMutex`) protects all `Wire` transactions. `sensorsTask`, `controlTask` (valve writes), and `flow2PollTask` all acquire this mutex before any I²C operation.
+
+---
+
+## 11. File Reference
+
+| File | Role |
+|---|---|
+| `DistillController.ino` | Boot sequence, WiFi, mbedTLS PSRAM redirect, task creation |
+| `config.h` | Pin assignments, timing constants, default thresholds, NVS key names |
+| `config.example.h` | Sanitised copy of `config.h` (credentials scrubbed), tracked in git |
+| `ui_strings.h` | All display strings for both LVGL and web UI |
+| `state.h` / `state.cpp` | `AppState`, mutex helpers, NVS load/save, sensor catalog |
+| `sensors.h` / `sensors.cpp` | DS18B20 (ROM-addressed, debounce), pressure, flow, level drivers |
+| `expander.h` / `expander.cpp` | PCF8574 drivers (both expanders), Wire mutex, `flow2PollTask` |
+| `ssr.h` / `ssr.cpp` | Software time-proportional SSR driver (`esp_timer`, 5 outputs) |
+| `control.h` / `control.cpp` | Safety check, SSR apply, valve evaluation, command parser |
+| `http_server.h` / `http_server.cpp` | HTTPS routes, `/state` serialiser, interactive client tracking, push OTA handler, cert NVS storage |
+| `web_ui.h` / `web_ui.cpp` | LittleFS file streaming for all web assets |
+| `ddns.h` / `ddns.cpp` | Cloudflare DNS A-record updater (FreeRTOS task, Core 0) |
+| `ota.h` / `ota.cpp` | Pull OTA from GitHub Releases (30 min check, stopped-only) |
+| `certs.h` | Compiled-in fallback TLS certificate |
+| `ui_lvgl.h` / `ui_lvgl.cpp` | LVGL panel layout, widget updates, screen transitions |
+| `data/web_ui.html` | Interactive web UI — served from LittleFS at `/` |
+| `data/monitor.html` | Always-on monitor page — served from LittleFS at `/monitor.html` |
+| `data/Background.png` | Apparatus photo — monitor page background |
+| `data/Barrel_Big.png` | Barrel graphic — served from LittleFS, also loaded by LVGL |
+| `data/Logo.png` | Logo graphic — served from LittleFS |
+| `data/favicon.ico` | Browser favicon |
+| `version.json` | Repo root — OTA version metadata, updated by `bump-push-release.sh` |
+| `partitions.csv` | Custom partition table (app + LittleFS) |
+| `flash-ota.sh` | Compile + push firmware to device over HTTP OTA |
+| `bump-push-release.sh` | Version bump, config sync, git commit, GitHub release, OTA binary build |
+| `renew-winery-cert.sh` | macOS cron script: certbot renewal + cert push to device |
+
+---
+
+## 12. Building
 
 ### Requirements
 
 - Arduino IDE 2.x or `arduino-cli`
-- ESP32 Arduino core **v3.x** (platform v3.3.7)
-- Libraries: `LVGL` v9, `Arduino_GFX_Library`, `JC3248W535EN-Touch-LCD`, `OneWire`, `DallasTemperature`, `ArduinoJson` v7
+- ESP32 Arduino core **v3.x**
+- Libraries: `LVGL` v9, `Arduino_GFX_Library`, `JC3248W535EN-Touch-LCD`, `OneWire`, `DallasTemperature`, `ArduinoJson` v7, `Preferences` (bundled), `LittleFS` (bundled), `HTTPUpdate` (bundled)
 
-### Board settings
+### Board Settings
 
 | Setting | Value |
 |---|---|
@@ -344,140 +405,112 @@ Falls back to compiled-in `certs.h` when NVS is empty (first boot or after NVS e
 | CDC On Boot | Enabled |
 | FQBN | `esp32:esp32:esp32s3:UploadSpeed=115200,CDCOnBoot=cdc,FlashSize=16M,PartitionScheme=app3M_fat9M_16MB,PSRAM=opi` |
 
-### First boot
+### First Boot
 
-1. Flash firmware.
+1. Flash firmware via USB.
 2. Upload LittleFS image (see below) — required for both web UIs.
-3. Open `https://<device-IP>`. Accept the cert warning or install `ca.crt`.
-4. Go to **Control → Sensors**, click **SCAN BUS**, assign DS18B20 ROM addresses.
-5. Go to **Control → Valves**, configure open/close rules.
-6. Select mode, set Master Power, press START.
-7. Open `https://<device-IP>/monitor.html` on the wall-mounted screen.
+3. Connect to serial monitor (115200 baud) to confirm boot sequence.
+4. Open `https://<device-IP>`. Accept the cert warning or install the CA cert.
+5. Go to **Control → Sensors**, click **SCAN BUS**, assign DS18B20 ROM addresses.
+6. Go to **Control → Valves**, configure open/close rules.
+7. Select a process mode, set Master Power, and press START.
+8. Open `https://<device-IP>/monitor.html` on the wall-mounted screen.
 
-### Uploading the LittleFS image
+### Uploading the Filesystem Image
 
-Contains `web_ui.html`, `monitor.html`, `Barrel_Big.png`, `Background.png`, `favicon.ico`. Re-flash whenever any file in `data/` changes — no firmware reflash needed.
+The LittleFS image contains `web_ui.html`, `monitor.html`, `Background.png`, `Barrel_Big.png`, `Logo.png`, and `favicon.ico`. Flash it once after firmware, and again whenever any asset file changes — no firmware reflash needed.
 
-**Arduino IDE 2.x** — install the LittleFS Upload plugin, then **Sketch → Upload Sketch Data**.
+**Arduino IDE 2.x** — Install the *LittleFS Upload* plugin, then use **Sketch → Upload Sketch Data**.
 
 **arduino-cli / mklittlefs:**
+
 ```bash
 mklittlefs -c data/ -b 4096 -p 256 -s 0x180000 littlefs.bin
 esptool.py --chip esp32s3 --port /dev/ttyUSB0 --baud 921600 \
            write_flash 0x670000 littlefs.bin
 ```
 
-### OTA push
+Partition offset `0x670000` and size `0x180000` match `partitions.csv`.
+
+### OTA Update
+
+**Pull OTA** — the device checks `version.json` on GitHub every 30 minutes and self-updates when a newer version is found (process must be stopped). Trigger an immediate check:
 
 ```bash
-curl --insecure -X POST https://winery.baghamut.com/ota \
-  -H "Content-Type: application/octet-stream" \
-  --data-binary "@DistillController.ino.bin" \
-  --max-time 120
+curl -k -X POST https://<device-IP>/api/ota/trigger
 ```
+
+**Push OTA** — compile and flash directly over the network:
+
+```bash
+./flash-ota.sh <device-IP>
+```
+
+This compiles via `arduino-cli`, then pushes the binary to `/api/ota/upload` using multipart `curl -F`. Build artifacts go to `/tmp/arduino_fw_build`.
 
 ---
 
-## 11. TLS certificate management
+## 13. TLS Certificate Management
 
-### Local network (self-signed CA)
+### NVS Cert Storage
 
-```bash
-# CA
-openssl genrsa -out ca.key 4096
-openssl req -new -x509 -days 3650 -key ca.key -out ca.crt \
-  -subj "/CN=DistillController CA/O=Winery/C=CZ"
-
-# Device cert
-openssl genrsa -out device.key 2048
-openssl req -new -key device.key -out device.csr \
-  -subj "/CN=distillcontroller.local/O=Winery/C=CZ"
-
-cat > san.ext << 'EOF'
-[SAN]
-subjectAltName = DNS:distillcontroller.local, IP:192.168.1.XXX
-EOF
-
-openssl x509 -req -days 825 \
-  -in device.csr -CA ca.crt -CAkey ca.key -CAcreateserial \
-  -out device.crt -extfile san.ext -extensions SAN
-```
-
-Install `ca.crt` on each client:
-
-| Platform | Method |
-|---|---|
-| macOS | `sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain ca.crt` |
-| Windows | `Import-Certificate -FilePath ca.crt -CertStoreLocation Cert:\LocalMachine\Root` |
-| iOS | AirDrop → Settings → VPN & Device Management → trust |
-| Android | Settings → Security → Install from storage → CA Certificate |
-
-### Public domain (Let's Encrypt)
-
-Push renewed cert to device without firmware rebuild:
+The device loads TLS certificates from NVS (`"certs"` namespace) on boot. If NVS is empty, it falls back to the compiled-in cert in `certs.h`. Push a new cert at any time:
 
 ```bash
-LIVE_DIR="$HOME/.certbot/config/live/winery.baghamut.com"
-PAYLOAD=$(python3 -c "
-import json
-cert = open('$LIVE_DIR/fullchain.pem').read()
-key  = open('$LIVE_DIR/privkey.pem').read()
-print(json.dumps({'cert': cert, 'key': key}))
-")
-curl --insecure -X POST https://winery.baghamut.com/api/update_cert \
+curl -k -X POST https://<device-IP>/api/update_cert \
   -H "Content-Type: application/json" \
-  -d "$PAYLOAD"
+  -d '{"cert":"<fullchain PEM>","key":"<private key PEM>"}'
 ```
 
-Automated renewal cron (every 2 months):
+The device saves to NVS and reboots. Serial output confirms: `[HTTPS] Cert loaded from NVS`.
+
+### Let's Encrypt + Cloudflare DNS
+
+Certificates are issued via `certbot` with the `certbot-dns-cloudflare` plugin (Python venv at `~/.certbot-venv`). The renewal script `renew-winery-cert.sh` handles unattended renewal and pushes the new cert to the device automatically. Run it via cron:
+
 ```
-0 9 1 */2 * /Users/baghamut/renew-winery-cert.sh >> /tmp/certbot-renew.log 2>&1
+0 3 1 * * /path/to/renew-winery-cert.sh >> /var/log/certbot-renew.log 2>&1
 ```
 
 ---
 
-## 12. DDNS
+## 14. DDNS (Cloudflare)
 
-`ddnsTask` runs on Core 0 at priority 1. Updates the GoDaddy `winery` A record when the device IP changes, rechecks every 5 minutes. Only changed IPs trigger an API call. 15 s settle delay on boot to avoid updating with a stale DHCP lease.
+`ddnsTask` runs on Core 0 at priority 1 with 8 KB stack. On boot it waits 15 seconds for the DHCP lease to stabilise, then:
 
-Credentials configured in `config.h` — keep out of repository.
+1. Fetches public WAN IP via `api.ipify.org` (fallback: `ifconfig.me/ip`).
+2. If the IP has changed since the last update, PATCHes the Cloudflare DNS A-record for `winery.baghamut.com`.
+3. Rechecks every 5 minutes.
+
+Cloudflare credentials (`cf_token`, `cf_zone_id`, `cf_rec_id`) are stored in NVS under the `"distill"` namespace — never in source code. Write them once via the `PROVISION_CF_CREDENTIALS` block in `setup()`, then remove the define and reflash.
+
+The DNS A record for `winery.baghamut.com` must exist in Cloudflare before the updater can patch it.
 
 ---
 
-## 13. Pull OTA
+## 15. Release Workflow
 
-`ota_pull` task runs on Core 0 at priority 1. Checks `version.json` from the GitHub repo every 30 minutes. If a newer version is found **and the process is stopped and no safety is tripped**, downloads and flashes the binary, then reboots.
+### `bump-push-release.sh`
 
-```json
-{
-  "version": "3.6.1",
-  "url": "https://github.com/baghamut/Winery-Controller/releases/download/v3.6.1/DistillController-v3.6.1.bin"
-}
+Automated version bump, build, and GitHub release:
+
+1. Selects project interactively from `~/Documents/Arduino/`.
+2. Reads `FW_VERSION` from `config.h`, auto-increments PATCH.
+3. Updates `config.h` in-place with the new version.
+4. Copies `config.h` → `config.example.h` with credentials scrubbed via `sed`.
+5. Compiles firmware via `arduino-cli` — reverts all modified files on build failure.
+6. Updates `version.json` with the new version and download URL.
+7. Commits, force-pushes to `origin main`.
+8. Creates annotated git tag and GitHub Release with the `.bin` attached.
+
+Build artifacts go to `/tmp/arduino_fw_build`. `config.h` is in `.gitignore` — only `config.example.h` is tracked.
+
+### `flash-ota.sh`
+
+Quick compile-and-push for development:
+
+```bash
+./flash-ota.sh 192.168.1.42
 ```
 
-First check fires 60 s after boot. Updated automatically by `bump-push-release.sh` on each release.
-
----
-
-## 14. Auto-restore after power loss
-
-On boot, after a 1.2 s sensor settle delay, the firmware checks:
-
-- `wasRunning` was `true` at last save
-- `processMode` is 1 or 2
-- `safetyTripped` is `false`
-- `masterPower` > 0
-- Kettle temperature drop since last save ≤ `AUTO_RESTORE_MAX_TEMP_DROP_C` (5 °C)
-
-If all conditions are met the process resumes automatically at the saved `masterPower`. Boot log prints `RESUME` or `SKIP` with the reason.
-
----
-
-## 15. Known pending items
-
-| ID | Severity | Description |
-|---|---|---|
-| H4 | Medium | `sensorsScanBus` blocking loop — should yield during long scan |
-| M7 | Low | Hardcoded flow unit label in one location |
-| L1 | Low | Debug touch dot visible in production build |
-| L4 | Low | `expanderWriteBit` TOCTOU on shadow state |
+Compiles the sketch, then pushes the binary to the device's `/api/ota/upload` endpoint via `curl -F`. The device reboots automatically on success.
