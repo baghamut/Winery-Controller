@@ -229,7 +229,7 @@ All endpoints are HTTPS (port 443). The server uses `esp_https_server` with mbed
 
 ```json
 {
-  "fw": "3.5.8",
+  "fw": "3.7.6",
   "isRunning": false,
   "processMode": 1,
   "masterPower": 65.0,
