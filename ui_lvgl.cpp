@@ -66,6 +66,12 @@ extern const lv_font_t lv_font_montserrat_22_bold;
 #define MON_ROW_DY    18    // row step (= MON_ROW_H, no inter-row gap)
 #define MON_STOP_Y    206   // fixed y of STOP button inside card (unchanged)
 
+// Valve panel row geometry (fits 3 physical valves on 320 px display)
+#define VLV_ROW_Y0    56    // y of first valve row inside card (after title + auto bar)
+#define VLV_ROW_DY    34    // step between valve rows
+#define VLV_ROW_H     30    // height of each valve row
+#define VLV_BACK_Y    (VLV_ROW_Y0 + 3 * VLV_ROW_DY + 8)  // y of BACK button
+
 // ---------------------------------------------------------------------------
 // Colors
 // ---------------------------------------------------------------------------
@@ -169,6 +175,17 @@ static lv_obj_t* wifi_pass_ta  = nullptr;
 static lv_obj_t* wifi_kb       = nullptr;
 
 // ---------------------------------------------------------------------------
+// Widget handles – Valve panel (Screen 3)
+// ---------------------------------------------------------------------------
+static lv_obj_t* pnl_valve       = nullptr;   // the panel itself
+static lv_obj_t* mon_valves_btn  = nullptr;   // "VALVES" button on Monitor panel
+static lv_obj_t* s_valvePrevPanel = nullptr;  // panel to return to on BACK
+static lv_obj_t* vlv_autoLbl     = nullptr;   // "RUNNING" / "STOPPED" status label
+static lv_obj_t* vlv_openBtn[3]  = {};         // OPEN  buttons for valves 0–2
+static lv_obj_t* vlv_closeBtn[3] = {};         // CLOSE buttons for valves 0–2
+static lv_obj_t* vlv_stateLbl[3] = {};         // state badge labels for valves 0–2
+
+// ---------------------------------------------------------------------------
 // Refresh state
 // ---------------------------------------------------------------------------
 static volatile bool s_refreshRequested = false;
@@ -177,6 +194,7 @@ static lv_timer_t*   s_refreshTimer     = nullptr;
 // Forward declarations
 static void uiShowMainFromWifi();
 static void uiShowWifiConfig();
+static void showOnlyPanel(lv_obj_t* show);
 static void showOnlyPanel(lv_obj_t* show);
 
 
@@ -595,6 +613,20 @@ static void buildControlPanel()
     lv_obj_set_style_text_font(ctrl_title, &lv_font_montserrat_16_bold, 0);
     lv_obj_set_pos(ctrl_title, 0, 0);
 
+    // Small VALVES shortcut in top-right of control card
+    {
+        lv_obj_t* ctrl_valves = makeBtn(card, STR_BTN_VALVES,
+                                        lv_color_hex(0x2A2A2A), CLR_ACCENT,
+                                        CARD_INNER_W - 80, 0, 78, 20,
+                                        [](lv_event_t*) {
+                                            s_valvePrevPanel = pnl_ctrl;
+                                            showOnlyPanel(pnl_valve);
+                                        });
+        lv_obj_set_style_text_font(ctrl_valves, &lv_font_montserrat_12, 0);
+        lv_obj_set_style_border_width(ctrl_valves, 1, 0);
+        lv_obj_set_style_border_color(ctrl_valves, CLR_ACCENT, 0);
+    }
+
     // MASTER POWER ROW
     lv_obj_t* pwrRow = lv_obj_create(card);
     lv_obj_set_pos(pwrRow, 0, CTRL_ROW_Y0);
@@ -827,9 +859,27 @@ static void buildMonitorPanel()
                  MASTER_SLIDER_X + MASTER_SLIDER_W + MASTER_PCT_GAP,
                  0);
 
-    mon_stop = makeBtn(card, STR_BTN_STOP, CLR_DANGER, CLR_TEXT,
-                       0, MON_STOP_Y, CARD_INNER_W, 32, cbStop);
-    lv_obj_set_style_text_font(mon_stop, &lv_font_montserrat_16_bold, 0);
+    // STOP (60 %) and VALVES (40 %) buttons side by side
+    {
+        const lv_coord_t GAP     = 8;
+        const lv_coord_t STOP_W  = CARD_INNER_W * 60 / 100;
+        const lv_coord_t VLV_W   = CARD_INNER_W - GAP - STOP_W;
+
+        mon_stop = makeBtn(card, STR_BTN_STOP, CLR_DANGER, CLR_TEXT,
+                           0, MON_STOP_Y, STOP_W, 32, cbStop);
+        lv_obj_set_style_text_font(mon_stop, &lv_font_montserrat_16_bold, 0);
+
+        mon_valves_btn = makeBtn(card, STR_BTN_VALVES,
+                                 lv_color_hex(0x2A2A2A), CLR_ACCENT,
+                                 STOP_W + GAP, MON_STOP_Y, VLV_W, 32,
+                                 [](lv_event_t*) {
+                                     s_valvePrevPanel = pnl_mon;
+                                     showOnlyPanel(pnl_valve);
+                                 });
+        lv_obj_set_style_text_font(mon_valves_btn, &lv_font_montserrat_14, 0);
+        lv_obj_set_style_border_width(mon_valves_btn, 1, 0);
+        lv_obj_set_style_border_color(mon_valves_btn, CLR_ACCENT, 0);
+    }
 }
 
 
@@ -940,12 +990,169 @@ static void buildWifiPanel()
 
 
 // ===========================================================================
+// VALVE PANEL  (Screen 3 — accessible from Monitor and Control)
+// ===========================================================================
+static void cbValveBack(lv_event_t*) {
+    showOnlyPanel(s_valvePrevPanel ? s_valvePrevPanel : pnl_mon);
+}
+static void cbValveAutoRun(lv_event_t*)  { handleCommand("VALVE:AUTO:RUN");  }
+static void cbValveAutoStop(lv_event_t*) { handleCommand("VALVE:AUTO:STOP"); }
+
+// Per-valve OPEN / CLOSE — index passed as user_data
+static void cbValveOpen(lv_event_t* e) {
+    int idx = (int)(intptr_t)lv_event_get_user_data(e);
+    char cmd[20];
+    snprintf(cmd, sizeof(cmd), "VALVE:%d:OPEN", idx);
+    handleCommand(cmd);
+}
+static void cbValveClose(lv_event_t* e) {
+    int idx = (int)(intptr_t)lv_event_get_user_data(e);
+    char cmd[20];
+    snprintf(cmd, sizeof(cmd), "VALVE:%d:CLOSE", idx);
+    handleCommand(cmd);
+}
+
+static void buildValvePanel()
+{
+    pnl_valve = lv_obj_create(scr_root);
+    lv_obj_set_pos(pnl_valve, 0, CONTENT_Y);
+    lv_obj_set_size(pnl_valve, UI_W, CONTENT_H);
+    lv_obj_set_style_bg_color(pnl_valve, CLR_BG, 0);
+    lv_obj_set_style_bg_opa(pnl_valve, LV_OPA_COVER, 0);
+    resetPanelStyle(pnl_valve);
+    lv_obj_clear_flag(pnl_valve, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(pnl_valve, LV_OBJ_FLAG_HIDDEN);
+
+    lv_obj_t* card = makeCard(pnl_valve, 8, 8, CARD_OUTER_W, CARD_H);
+    // CARD_INNER_W = 448, CARD_INNER_H = 252
+
+    // -------------------------------------------------------------------------
+    // Title
+    // -------------------------------------------------------------------------
+    lv_obj_t* titleLbl = lv_label_create(card);
+    lv_label_set_text(titleLbl, STR_TITLE_VALVES);
+    lv_obj_set_style_text_color(titleLbl, CLR_ACCENT, 0);
+    lv_obj_set_style_text_font(titleLbl, &lv_font_montserrat_16_bold, 0);
+    lv_obj_set_pos(titleLbl, 0, 0);
+
+    // -------------------------------------------------------------------------
+    // Automation bar — [ "Automation:" ] [ status ] [ START AUTO ] [ STOP AUTO ]
+    // -------------------------------------------------------------------------
+    lv_obj_t* autoRow = lv_obj_create(card);
+    lv_obj_set_pos(autoRow, 0, 22);
+    lv_obj_set_size(autoRow, lv_pct(100), 28);
+    lv_obj_set_style_bg_color(autoRow,      lv_color_hex(0x181818), 0);
+    lv_obj_set_style_bg_opa(autoRow,        LV_OPA_COVER,  0);
+    lv_obj_set_style_radius(autoRow,        6, 0);
+    lv_obj_set_style_border_width(autoRow,  0, 0);
+    lv_obj_set_style_pad_all(autoRow,       4, 0);
+    lv_obj_set_style_outline_width(autoRow, 0, 0);
+    lv_obj_set_style_shadow_width(autoRow,  0, 0);
+    lv_obj_clear_flag(autoRow, LV_OBJ_FLAG_SCROLLABLE);
+    // autoRow content area: (448-8) x (28-8) = 440 x 20
+
+    lv_obj_t* autoNameLbl = lv_label_create(autoRow);
+    lv_label_set_text(autoNameLbl, STR_AUTOMATION_LBL);
+    lv_obj_set_style_text_color(autoNameLbl, CLR_MUTED, 0);
+    lv_obj_set_style_text_font(autoNameLbl,  &lv_font_montserrat_14, 0);
+    lv_obj_set_pos(autoNameLbl, 0, 2);
+
+    vlv_autoLbl = lv_label_create(autoRow);
+    lv_label_set_text(vlv_autoLbl, STR_AUTO_STOPPED);
+    lv_obj_set_style_text_color(vlv_autoLbl, CLR_MUTED,  SEL(LV_PART_MAIN, LV_STATE_DEFAULT));
+    lv_obj_set_style_text_color(vlv_autoLbl, CLR_GREEN,  SEL(LV_PART_MAIN, LV_STATE_USER_1));
+    lv_obj_set_style_text_font(vlv_autoLbl, &lv_font_montserrat_14, 0);
+    lv_obj_set_pos(vlv_autoLbl, 88, 2);
+
+    // STOP AUTO (right edge)
+    lv_obj_t* btnAutoStop = makeBtn(autoRow, STR_BTN_AUTO_STOP,
+                                    lv_color_hex(0x555555), CLR_TEXT,
+                                    332, 0, 104, 20, cbValveAutoStop);
+    lv_obj_set_style_text_font(btnAutoStop, &lv_font_montserrat_12, 0);
+
+    // START AUTO (to left of STOP AUTO)
+    lv_obj_t* btnAutoRun = makeBtn(autoRow, STR_BTN_AUTO_START,
+                                   STR_GREEN, CLR_TEXT,
+                                   222, 0, 104, 20, cbValveAutoRun);
+    lv_obj_set_style_text_font(btnAutoRun, &lv_font_montserrat_12, 0);
+
+    // -------------------------------------------------------------------------
+    // Valve rows — physical valves 0 (Dephlegmator), 1 (Dripper), 2 (Water)
+    // Layout per row: [name 120px] [OPEN 72px] [CLOSE 72px] [status badge]
+    // -------------------------------------------------------------------------
+    const char* valveNames[3] = {
+        STR_VALVE_NAME_0, STR_VALVE_NAME_1, STR_VALVE_NAME_2
+    };
+
+    for (int i = 0; i < 3; i++) {
+        lv_coord_t ry = VLV_ROW_Y0 + i * VLV_ROW_DY;
+
+        lv_obj_t* row = lv_obj_create(card);
+        lv_obj_set_pos(row, 0, ry);
+        lv_obj_set_size(row, lv_pct(100), VLV_ROW_H);
+        lv_obj_set_style_bg_color(row,      lv_color_hex(0x181818), 0);
+        lv_obj_set_style_bg_opa(row,        LV_OPA_COVER, 0);
+        lv_obj_set_style_radius(row,        6, 0);
+        lv_obj_set_style_border_width(row,  0, 0);
+        lv_obj_set_style_pad_all(row,       4, 0);
+        lv_obj_set_style_outline_width(row, 0, 0);
+        lv_obj_set_style_shadow_width(row,  0, 0);
+        lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+        // row content: 440 x 22
+
+        // Valve name
+        lv_obj_t* nameLbl = lv_label_create(row);
+        lv_label_set_text(nameLbl, valveNames[i]);
+        lv_label_set_long_mode(nameLbl, LV_LABEL_LONG_CLIP);
+        lv_obj_set_size(nameLbl, 120, LV_SIZE_CONTENT);
+        lv_obj_set_style_text_color(nameLbl, CLR_TEXT, 0);
+        lv_obj_set_style_text_font(nameLbl, &lv_font_montserrat_14, 0);
+        lv_obj_set_pos(nameLbl, 0, 3);
+
+        // OPEN button — cb added separately so user_data = index i
+        vlv_openBtn[i] = makeBtn(row, STR_BTN_OPEN,
+                                  lv_color_hex(0x383838), CLR_TEXT,
+                                  126, 0, 72, 22, nullptr);
+        lv_obj_set_style_text_font(vlv_openBtn[i], &lv_font_montserrat_14, 0);
+        lv_obj_add_event_cb(vlv_openBtn[i], cbValveOpen, LV_EVENT_CLICKED,
+                            (void*)(intptr_t)i);
+
+        // CLOSE button
+        vlv_closeBtn[i] = makeBtn(row, STR_BTN_CLOSE,
+                                   lv_color_hex(0x383838), CLR_TEXT,
+                                   206, 0, 72, 22, nullptr);
+        lv_obj_set_style_text_font(vlv_closeBtn[i], &lv_font_montserrat_14, 0);
+        lv_obj_add_event_cb(vlv_closeBtn[i], cbValveClose, LV_EVENT_CLICKED,
+                            (void*)(intptr_t)i);
+
+        // State badge label — USER_1 state = open (green)
+        vlv_stateLbl[i] = lv_label_create(row);
+        lv_label_set_text(vlv_stateLbl[i], "CLOSED");
+        lv_obj_set_style_text_color(vlv_stateLbl[i], CLR_MUTED,
+                                    SEL(LV_PART_MAIN, LV_STATE_DEFAULT));
+        lv_obj_set_style_text_color(vlv_stateLbl[i], CLR_GREEN,
+                                    SEL(LV_PART_MAIN, LV_STATE_USER_1));
+        lv_obj_set_style_text_font(vlv_stateLbl[i], &lv_font_montserrat_14, 0);
+        lv_obj_set_pos(vlv_stateLbl[i], 292, 3);
+    }
+
+    // -------------------------------------------------------------------------
+    // BACK button — returns to whichever panel launched the valve screen
+    // -------------------------------------------------------------------------
+    lv_obj_t* btnBack = makeBtn(card, STR_BTN_BACK_MON,
+                                lv_color_hex(0x383838), CLR_TEXT,
+                                0, VLV_BACK_Y, CARD_INNER_W, 30, cbValveBack);
+    lv_obj_set_style_text_font(btnBack, &lv_font_montserrat_16_bold, 0);
+}
+
+
+// ===========================================================================
 // PANEL NAVIGATION
 // ===========================================================================
 
 static void showOnlyPanel(lv_obj_t* show)
 {
-    lv_obj_t* panels[] = { pnl_mode, pnl_ctrl, pnl_mon, pnl_wifi, pnl_tmax };
+    lv_obj_t* panels[] = { pnl_mode, pnl_ctrl, pnl_mon, pnl_wifi, pnl_tmax, pnl_valve };
     for (auto* p : panels) {
         if (!p) continue;
         if (p == show) lv_obj_clear_flag(p, LV_OBJ_FLAG_HIDDEN);
@@ -960,9 +1167,14 @@ static void uiShowMainFromWifi()
     bool running = g_state.isRunning;
     stateUnlock();
 
+    // Don't auto-navigate away from the valve screen — the operator
+    // explicitly opened it and must use the BACK button to leave.
+    bool valveVisible = pnl_valve && !lv_obj_has_flag(pnl_valve, LV_OBJ_FLAG_HIDDEN);
+    if (!valveVisible) {
     if (pm == 0)       showOnlyPanel(pnl_mode);
     else if (!running) showOnlyPanel(pnl_ctrl);
     else               showOnlyPanel(pnl_mon);
+}
 }
 
 static void uiShowWifiConfig()
@@ -990,6 +1202,7 @@ void uiInit()
     buildMonitorPanel();
     buildWifiPanel();
     buildTmaxPanel();
+    buildValvePanel();
 
     {
         int  pm      = g_state.processMode;
@@ -1081,10 +1294,11 @@ void uiRefreshFromState()
     }
 
     // Panel visibility
-    bool wifiVis = pnl_wifi && !lv_obj_has_flag(pnl_wifi, LV_OBJ_FLAG_HIDDEN);
-    bool tmaxVis = pnl_tmax && !lv_obj_has_flag(pnl_tmax, LV_OBJ_FLAG_HIDDEN);
+    bool wifiVis  = pnl_wifi  && !lv_obj_has_flag(pnl_wifi,  LV_OBJ_FLAG_HIDDEN);
+    bool tmaxVis  = pnl_tmax  && !lv_obj_has_flag(pnl_tmax,  LV_OBJ_FLAG_HIDDEN);
+    bool valveVis = pnl_valve && !lv_obj_has_flag(pnl_valve, LV_OBJ_FLAG_HIDDEN);
 
-    if (!wifiVis && !tmaxVis) {
+    if (!wifiVis && !tmaxVis && !valveVis) {
         if (s.processMode == 0)  showOnlyPanel(pnl_mode);
         else if (!s.isRunning)   showOnlyPanel(pnl_ctrl);
         else                     showOnlyPanel(pnl_mon);
@@ -1300,6 +1514,46 @@ void uiRefreshFromState()
         lv_obj_set_style_text_color(mon_loadPct,
             s.masterPower > 0.0f ? CLR_ACCENT : CLR_MUTED, 0);
     }
+
+    // -------------------------------------------------------------------------
+    // Valve panel — only refresh when visible (avoids wasted LVGL work)
+    // -------------------------------------------------------------------------
+    if (pnl_valve && !lv_obj_has_flag(pnl_valve, LV_OBJ_FLAG_HIDDEN)) {
+
+        // Automation status label
+        if (vlv_autoLbl) {
+            lv_label_set_text(vlv_autoLbl,
+                s.automationRunning ? STR_AUTO_RUNNING : STR_AUTO_STOPPED);
+            if (s.automationRunning) lv_obj_add_state(vlv_autoLbl,    LV_STATE_USER_1);
+            else                     lv_obj_remove_state(vlv_autoLbl, LV_STATE_USER_1);
+        }
+
+        // Per-valve state: badge label + button colour highlights
+        for (int i = 0; i < 3; i++) {
+            bool open = (i < VALVE_COUNT) && s.valveOpen[i];
+
+            // State badge
+            if (vlv_stateLbl[i]) {
+                lv_label_set_text(vlv_stateLbl[i], open ? "OPEN" : "CLOSED");
+                if (open) lv_obj_add_state(vlv_stateLbl[i],    LV_STATE_USER_1);
+                else      lv_obj_remove_state(vlv_stateLbl[i], LV_STATE_USER_1);
+            }
+            // OPEN button: green bg when valve is open, neutral otherwise
+            if (vlv_openBtn[i]) {
+                lv_obj_set_style_bg_color(vlv_openBtn[i],
+                    open ? CLR_GREEN : lv_color_hex(0x383838), 0);
+                // Flip label colour so it stays readable against the background
+                lv_obj_t* lbl = lv_obj_get_child(vlv_openBtn[i], 0);
+                if (lbl) lv_obj_set_style_text_color(lbl,
+                             open ? CLR_CARD : CLR_TEXT, 0);
+            }
+            // CLOSE button: danger bg when valve is closed, neutral otherwise
+            if (vlv_closeBtn[i]) {
+                lv_obj_set_style_bg_color(vlv_closeBtn[i],
+                    !open ? CLR_DANGER : lv_color_hex(0x383838), 0);
+            }
+        }
+    }
 }
 
 
@@ -1309,3 +1563,7 @@ void uiRefreshFromState()
 void uiShowModeScreen()    { showOnlyPanel(pnl_mode); }
 void uiShowControlScreen() { showOnlyPanel(pnl_ctrl); }
 void uiShowMonitorScreen() { showOnlyPanel(pnl_mon);  }
+void uiShowValveScreen()   {
+    s_valvePrevPanel = pnl_mon;
+    showOnlyPanel(pnl_valve);
+}

@@ -11,6 +11,8 @@
 #include <Arduino.h>
 #include "config.h"
 
+void expanderI2CScan();   // diagnostic: scans bus and prints ACK/NACK to Serial
+
 // ---------------------------------------------------------------------------
 // Expander 1 – level + valves  (call once from sensorsInit)
 // ---------------------------------------------------------------------------
@@ -23,7 +25,9 @@ inline bool levelIsOk() { return !expanderReadBit(EXPANDER_LEVEL); }
 
 inline void valveSet(uint8_t index, bool open) {
     if (index > 2) return;
-    expanderWriteBit(EXPANDER_VALVE1 + index, open);
+    // Relay module is active-LOW: LOW energizes the coil (valve opens).
+    // Invert so callers use the logical meaning (open=true → relay ON).
+    expanderWriteBit(EXPANDER_VALVE1 + index, !open);
 }
 
 // ---------------------------------------------------------------------------

@@ -95,7 +95,10 @@ void stateUnlock() {
 // ---------------------------------------------------------------------------
 static void stateLoadFromNVS() {
     Preferences prefs;
-    if (!prefs.begin(NVS_NAMESPACE, true)) return;   // open read-only
+    // Open read-write so the namespace is created on first boot (freshly erased
+    // NVS has no namespaces at all — read-only open fails with NOT_FOUND).
+    // The VALID flag check below prevents us from reading garbage values.
+    if (!prefs.begin(NVS_NAMESPACE, false)) return;
 
     // VALID flag: if not set, this is the first boot → keep compile defaults
     uint8_t valid = prefs.getUChar(NVS_KEY_VALID, 0);

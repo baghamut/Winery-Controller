@@ -324,7 +324,8 @@ void wifiConnect()
 void setup()
 {
     Serial.begin(115200);
-    delay(200);
+    delay(2000);
+    Serial.flush();
     Serial.println("\n[BOOT] DistillController " FW_VERSION);
 
     esp_reset_reason_t resetReason = esp_reset_reason();
@@ -456,6 +457,10 @@ void setup()
 
     // 9. Sensor task – Core 0, priority 2
     sensorsInit();
+    delay(500);
+    Serial.println("[BOOT] Forcing 1-Wire scan");
+    int n = sensorsScanBus();
+    Serial.printf("[BOOT] Scan result: %d sensors\n", n);
     expander2Init();
     xTaskCreatePinnedToCore(flow2PollTask, "flow2",   4096, nullptr, 2, &h_flow2,   0);
     xTaskCreatePinnedToCore(sensorsTask,   "sensors", 4096, nullptr, 2, &h_sensors, 0);
@@ -499,6 +504,7 @@ void setup()
             g_state.processMode != 0 &&
             !g_state.safetyTripped &&
             g_state.masterPower > 0.0f &&
+            currTankValid &&
             tempDropOk;
 
         Serial.printf("[BOOT] Auto-restore: wasRunning=%d mode=%d tripped=%d power=%.0f "

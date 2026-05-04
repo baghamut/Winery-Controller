@@ -182,7 +182,7 @@ bool controlSafetyCheck() {
 //   sudden power loss records the most recent known tank temperature, giving
 //   the auto-restore check the best possible data.
 // ---------------------------------------------------------------------------
- void applySsrFromState() {
+void applySsrFromState() {
     stateLock();
     AppState snap = g_state;
     stateUnlock();
@@ -280,11 +280,19 @@ static bool evalValveCondition(const ValveCondition& cond, const AppState& snap)
 // Evaluate all valve rules and drive hardware outputs.
 // Called every controlTask tick regardless of isRunning or processMode.
 // Close takes priority over open when both conditions fire simultaneously.
+//
+// Short-circuits when automationRunning is false. The operator must
+// explicitly call VALVE:AUTO:RUN after every boot, and any manual
+// VALVE:N:OPEN / VALVE:N:CLOSE command (or STOP / MODE:0 / safety trip)
+// clears the flag so this function does nothing until automation is
+// explicitly resumed. Valves keep their last commanded state in the meantime.
 static void valveEvaluateAll() {
     // One state snapshot for the whole evaluation pass – cheap, consistent.
     stateLock();
     AppState snap = g_state;
     stateUnlock();
+
+    if (!snap.automationRunning) return;
 
     for (int i = 0; i < VALVE_COUNT; i++) {
         bool openTrig  = evalValveCondition(snap.valveRules[i].openWhen,  snap);
@@ -337,11 +345,14 @@ void controlTask(void* pvParams) {
             // SAFETY TRIP – shut everything down immediately
             // =================================================================
             stateLock();
-            g_state.isRunning      = false;
-            g_state.timerElapsedMs = 0;
+            g_state.isRunning         = false;
+            g_state.timerElapsedMs    = 0;
             // Zero out masterPower so the UI correctly shows 0 % after a trip.
             // The user must set a new power level and press START to resume.
-            g_state.masterPower    = 0.0f;
+            g_state.masterPower       = 0.0f;
+            // Stop valve automation on safety trip – operator must explicitly
+            // resume after addressing the cause of the trip.
+            g_state.automationRunning = false;
             stateUnlock();
 
             ssrAllOff();               // cut all outputs at hardware level
@@ -399,10 +410,13 @@ void handleCommand(const String& cmd) {
         if (pm < 0 || pm > 2) pm = 0;
 
         stateLock();
-        g_state.processMode    = pm;
-        g_state.isRunning      = false;
-        g_state.timerElapsedMs = 0;
-        g_state.masterPower    = 0.0f;
+        g_state.processMode       = pm;
+        g_state.isRunning         = false;
+        g_state.timerElapsedMs    = 0;
+        g_state.masterPower       = 0.0f;
+        // Mode change always halts valve automation – operator must explicitly
+        // resume with VALVE:AUTO:RUN once a new run is configured.
+        g_state.automationRunning = false;
         if (pm == 0) {
             // Clear safety latch when returning to idle
             g_state.safetyTripped = false;
@@ -529,13 +543,14 @@ void handleCommand(const String& cmd) {
     // =========================================================================
     if (c == "STOP") {
         stateLock();
-        g_state.isRunning      = false;
-        g_state.processMode    = 0;
-        g_state.timerElapsedMs = 0;
-        g_state.masterPower    = 0.0f;   // reset power on stop so next run starts clean
-        g_state.safetyTripped  = false;
-        g_state.safetyMessage  = "";
-        g_state.lastTankTempC  = g_state.kettleTemp;   // snapshot for auto-restore
+        g_state.isRunning         = false;
+        g_state.processMode       = 0;
+        g_state.timerElapsedMs    = 0;
+        g_state.masterPower       = 0.0f;   // reset power on stop so next run starts clean
+        g_state.automationRunning = false;  // STOP always halts valve automation
+        g_state.safetyTripped     = false;
+        g_state.safetyMessage     = "";
+        g_state.lastTankTempC     = g_state.kettleTemp;   // snapshot for auto-restore
         stateUnlock();
 
         ssrAllOff();
@@ -622,6 +637,34 @@ void handleCommand(const String& cmd) {
     }
 
     // =========================================================================
+    // VALVE:AUTO:RUN  – Start rule-based valve automation
+    // VALVE:AUTO:STOP – Stop  rule-based valve automation
+    //   automationRunning is NOT persisted in NVS — every boot starts STOPPED.
+    //   Operator must explicitly resume automation after power events or any
+    //   manual override. Exact-match checks come first so they don't fall
+    //   through into the broader VALVE: prefix matcher below.
+    // =========================================================================
+    if (c == "VALVE:AUTO:RUN") {
+        stateLock();
+        g_state.automationRunning = true;
+        stateUnlock();
+        Serial.println("[CMD] Valve automation: RUN");
+        return;
+    }
+    if (c == "VALVE:AUTO:STOP") {
+        stateLock();
+        g_state.automationRunning = false;
+        stateUnlock();
+        Serial.println("[CMD] Valve automation: STOP");
+        return;
+    }
+
+    // =========================================================================
+    // VALVE:N:OPEN  / VALVE:N:CLOSE  –  Manual valve override
+    //   Sets valve N's hardware state directly via I2C and clears
+    //   automationRunning so the rule engine cannot fight the operator.
+    //   Operator must explicitly send VALVE:AUTO:RUN to resume automation.
+    //
     // VALVE:N:OPENCFG:<sensorId>:<op>:<value>
     // VALVE:N:CLOSECFG:<sensorId>:<op>:<value>
     //   Configure the open or close condition for valve N (0-based index).
@@ -639,6 +682,25 @@ void handleCommand(const String& cmd) {
         int valveIdx = c.substring(p1, p2).toInt();
         if (valveIdx < 0 || valveIdx >= VALVE_COUNT) {
             Serial.printf("[CMD] VALVE: index %d out of range (0–%d)\n", valveIdx, VALVE_COUNT - 1);
+            return;
+        }
+
+        // -------------------------------------------------------------------
+        // Manual override path — VALVE:N:OPEN or VALVE:N:CLOSE.
+        // No further colon-delimited fields after the action keyword, so
+        // detect this short form BEFORE the OPENCFG/CLOSECFG parser (which
+        // requires a third colon and would error out).
+        // -------------------------------------------------------------------
+        String rest = c.substring(p2 + 1);
+        if (rest == "OPEN" || rest == "CLOSE") {
+            bool open = (rest == "OPEN");
+            stateLock();
+            g_state.valveOpen[valveIdx]  = open;
+            g_state.automationRunning    = false;   // any manual action freezes automation
+            stateUnlock();
+            valveSet(valveIdx, open);                // immediate I2C write
+            Serial.printf("[CMD] VALVE %d manual %s (automation stopped)\n",
+                          valveIdx, open ? "OPEN" : "CLOSE");
             return;
         }
 
@@ -713,6 +775,87 @@ void handleCommand(const String& cmd) {
 
         stateSaveToNVS();
         Serial.printf("[CMD] Sensor slot %d → %s\n", slot, romHex.c_str());
+        return;
+    }
+
+    // =========================================================================
+    // DIAG:PINS  –  One-shot hardware diagnostic, prints to Serial.
+    //   Safe to run at any time; SSR pulse sequence is skipped if running.
+    //   Trigger via web UI: POST / with body "DIAG:PINS"
+    //   Or serial: send the string directly.
+    //
+    //   Output per subsystem:
+    //     SSRs     – pulses each 100 % for 300 ms then off (listen for clicks)
+    //     Pressure – raw ADC value + estimated voltage
+    //     Flow     – static pin level (HIGH = pull-up OK)
+    //     1-Wire   – bus scan, prints every ROM found
+    //     I2C      – scans 0x18–0x27, prints ACK/NACK per address
+    // =========================================================================
+    if (c == "DIAG:PINS") {
+        Serial.println("[DIAG-PINS] ── Pin diagnostic ──────────────────────");
+
+        // --- SSRs ---
+        {
+            stateLock();
+            bool running = g_state.isRunning;
+            stateUnlock();
+
+            if (running) {
+                Serial.println("[DIAG-PINS] SSRs: SKIPPED (process is running)");
+            } else {
+                const uint8_t pins[SSR_COUNT] = {
+                    PIN_SSR1, PIN_SSR2, PIN_SSR3, PIN_SSR4, PIN_SSR5
+                };
+                for (int i = 0; i < SSR_COUNT; i++) {
+                    ssrSetDuty(i + 1, 100.0f);
+                    Serial.printf("[DIAG-PINS] SSR%d  GPIO%-2d → ON  (listen for relay click)\n",
+                                  i + 1, pins[i]);
+                    vTaskDelay(pdMS_TO_TICKS(300));
+                    ssrSetDuty(i + 1, 0.0f);
+                    Serial.printf("[DIAG-PINS] SSR%d  GPIO%-2d → OFF\n", i + 1, pins[i]);
+                    vTaskDelay(pdMS_TO_TICKS(100));
+                }
+            }
+        }
+
+        // --- Pressure ADC ---
+        {
+            int   raw  = analogRead(PIN_PRESSURE);
+            float volt = raw / 4095.0f * 3.3f;
+            Serial.printf("[DIAG-PINS] IO%-2d  Pressure   raw=%-4d  %.3f V%s\n",
+                          PIN_PRESSURE, raw, volt,
+                          raw < 100 ? "  ← likely offline/disconnected" : "");
+        }
+
+        // --- Flow pin static level ---
+        {
+            int lvl = digitalRead(PIN_FLOW);
+            Serial.printf("[DIAG-PINS] IO%-2d  Flow       %s%s\n",
+                          PIN_FLOW,
+                          lvl ? "HIGH" : "LOW",
+                          lvl ? "  (pull-up OK)" : "  ← LOW at rest, check external pull-up");
+        }
+
+        // --- 1-Wire bus scan ---
+        {
+            Serial.printf("[DIAG-PINS] IO%-2d  1-Wire     scanning...\n", PIN_ONEWIRE);
+            int found = sensorsScanBus();
+            Serial.printf("[DIAG-PINS] IO%-2d  1-Wire     %d device(s) found%s\n",
+                          PIN_ONEWIRE, found,
+                          found == 0 ? "  ← none, check 4.7kΩ pull-up & wiring" : "  ✓");
+            for (int i = 0; i < found; i++) {
+                uint8_t rom[8];
+                sensorsGetScannedRom(i, rom);
+                char hex[17];
+                romToHex(rom, hex);
+                Serial.printf("[DIAG-PINS]         ROM[%d] = %s\n", i, hex);
+            }
+        }
+
+        // --- I2C scan ---
+        expanderI2CScan();
+
+        Serial.println("[DIAG-PINS] ── Done ─────────────────────────────────");
         return;
     }
 

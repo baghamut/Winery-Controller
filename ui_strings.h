@@ -221,3 +221,20 @@ constexpr const char* STR_VALVE_OP_LT              = "<";
 constexpr const char* STR_VALVE_OP_GTE             = ">=";
 constexpr const char* STR_VALVE_OP_LTE             = "<=";
 constexpr const char* STR_VALVE_OP_EQ              = "==";
+
+// ---------------------------------------------------------------------------
+// Valve manual control & automation status (Stage 1 – firmware foundation)
+//   Used by the new LVGL Valves screen (Stage 3) and the extended Web UI
+//   Valves Control screen (Stage 2). Status values reuse STR_STATUS_RUNNING /
+//   STR_STATUS_STOPPED via aliases so the same words mean the same thing
+//   everywhere ("RUNNING" / "STOPPED").
+// ---------------------------------------------------------------------------
+constexpr const char* STR_BTN_OPEN                 = "OPEN";
+constexpr const char* STR_BTN_CLOSE                = "CLOSE";
+constexpr const char* STR_BTN_VALVES               = "VALVES";          // Monitor → Valves nav button
+constexpr const char* STR_BTN_BACK_MON             = "\xC2\xAB" " MONITOR";  // « MONITOR — back to monitor
+constexpr const char* STR_AUTOMATION_LBL           = "Automation:";
+constexpr const char* STR_AUTO_RUNNING             = STR_STATUS_RUNNING;
+constexpr const char* STR_AUTO_STOPPED             = STR_STATUS_STOPPED;
+constexpr const char* STR_BTN_AUTO_START           = "START AUTO";
+constexpr const char* STR_BTN_AUTO_STOP            = "STOP AUTO";

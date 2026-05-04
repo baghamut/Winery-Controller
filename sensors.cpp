@@ -75,6 +75,31 @@ static uint8_t  pressureWinIdx   = 0;
 static uint8_t  pressureWinFill  = 0;
 
 // ---------------------------------------------------------------------------
+// 1-Wire auto-recovery
+//   If every assigned sensor returns DEVICE_DISCONNECTED_C or 85.0 °C
+//   (power-on default) for TEMP_REINIT_AFTER consecutive cycles, the bus is
+//   considered stuck and dallas.begin() is called to reinitialise the library.
+// ---------------------------------------------------------------------------
+static uint8_t       s_tempFailStreak  = 0;
+static const uint8_t TEMP_REINIT_AFTER = 3;   // ~3 s at 1 Hz
+
+// ---------------------------------------------------------------------------
+// Per-sensor miss debounce
+//   A single bad read (noise, brief parasitic power sag) no longer immediately
+//   marks a sensor OFFLINE.  The last good value is held silently until
+//   SENSOR_OFFLINE_AFTER consecutive misses confirm the sensor is truly gone.
+//   Recovery is immediate: one valid reading resets the counter and updates
+//   the displayed value.
+//
+//   This eliminates the "flicker" pattern where individual sensors briefly
+//   show OFFLINE for 1–2 cycles due to 1-Wire bus noise or brief CPU load
+//   spikes (e.g. TLS handshakes) disturbing the conversion timing.
+// ---------------------------------------------------------------------------
+static float         s_lastGoodTemp[MAX_SENSORS];          // initialised in sensorsInit()
+static uint8_t       s_sensorMissCount[MAX_SENSORS] = {0};
+static const uint8_t SENSOR_OFFLINE_AFTER = 3;             // ~3 s at 1 Hz
+
+// ---------------------------------------------------------------------------
 // ROM utility functions
 // ---------------------------------------------------------------------------
 void romToHex(const uint8_t* rom, char* buf) {
@@ -108,6 +133,10 @@ void sensorsInit() {
     dallas.setResolution(DS18B20_RESOLUTION);
     // setWaitForConversion left at default (true) so requestTemperatures()
     // blocks ~750 ms and getTempC() always returns valid data on the same tick.
+
+    // Initialise per-sensor debounce state.
+    // s_sensorMissCount is zero-initialised by the static declaration above.
+    for (int i = 0; i < MAX_SENSORS; i++) s_lastGoodTemp[i] = TEMP_OFFLINE_THRESH;
 
     analogReadResolution(12);
 
@@ -150,6 +179,8 @@ void sensorsGetScannedRom(int idx, uint8_t romOut[8]) {
 // sensorsUpdate – called every ~1000 ms from sensorsTask
 // ---------------------------------------------------------------------------
 void sensorsUpdate() {
+    static uint32_t s_callCount = 0;
+    Serial.printf("[TEMP] sensorsUpdate enter #%lu\n", ++s_callCount);
     // -----------------------------------------------------------------------
     // Temperatures – request all simultaneously, then read by ROM address.
     //
@@ -170,17 +201,105 @@ void sensorsUpdate() {
 
     // Step 2: bus I/O — guarded by the 1-Wire mutex only, stateLock NOT held
     float temps[MAX_SENSORS];
+
+    // DEBUG: measure how long we wait for the mutex (long wait = sensorsScanBus
+    // or another caller is holding the bus — points to contention as root cause).
+    uint32_t t_mutexWait = millis();
     xSemaphoreTake(s_onewireMutex, portMAX_DELAY);
+    uint32_t mutexWaitMs = millis() - t_mutexWait;
+    if (mutexWaitMs > 50) {
+        Serial.printf("[TEMP] waited %u ms for 1-Wire mutex\n", mutexWaitMs);
+    }
+
+    // DEBUG: measure total bus read time (>1100 ms = bus stuck or conversion
+    // timeout — points to parasitic power issue or bus line problem).
+    uint32_t t_busStart = millis();
     dallas.requestTemperatures();
-    // DS18B20 at 12-bit needs ~750 ms; sensorsTask sleeps 1000 ms so we're fine.
+
+    uint8_t assigned = 0, failed = 0;
     for (int i = 0; i < MAX_SENSORS; i++) {
         if (!romIsAssigned(roms[i])) {
             temps[i] = TEMP_OFFLINE_THRESH;
+            s_sensorMissCount[i] = 0;   // unassigned slot — reset counter
         } else {
+            assigned++;
             float v = dallas.getTempC(roms[i]);
-            temps[i] = (v == DEVICE_DISCONNECTED_C) ? TEMP_OFFLINE_THRESH : v;
+            // DEVICE_DISCONNECTED_C  = bus error / sensor not responding
+            // 85.0 °C                = DS18B20 power-on default returned when
+            //                          conversion did not complete (bus glitch)
+            if (v == DEVICE_DISCONNECTED_C || v == 85.0f) {
+                failed++;
+                if (++s_sensorMissCount[i] >= SENSOR_OFFLINE_AFTER) {
+                    // Confirmed offline after SENSOR_OFFLINE_AFTER consecutive misses.
+                    Serial.printf("[TEMP] slot %d OFFLINE after %u misses (last good %.2f C)\n",
+                                  i, s_sensorMissCount[i], s_lastGoodTemp[i]);
+                    temps[i] = TEMP_OFFLINE_THRESH;
+                } else {
+                    // Brief glitch — hold last good value to avoid UI flicker.
+                    // The miss counter keeps incrementing; if the sensor stays
+                    // gone it will reach the threshold and go OFFLINE cleanly.
+                    Serial.printf("[TEMP] slot %d miss %u/%u val=%.2f holding %.2f C\n",
+                                  i, s_sensorMissCount[i], SENSOR_OFFLINE_AFTER,
+                                  v, s_lastGoodTemp[i]);
+                    temps[i] = s_lastGoodTemp[i];
+                }
+            } else {
+                if (s_sensorMissCount[i] > 0) {
+                    Serial.printf("[TEMP] slot %d RECOVERED after %u miss(es), val=%.2f C\n",
+                                  i, s_sensorMissCount[i], v);
+                }
+                s_sensorMissCount[i] = 0;
+                s_lastGoodTemp[i]    = v;
+                temps[i]             = v;
+            }
         }
     }
+
+    uint32_t busMs = millis() - t_busStart;
+    if (busMs > 1100) {
+        Serial.printf("[TEMP] bus read took %u ms (expected ~750) assigned=%u failed=%u\n",
+                      busMs, assigned, failed);
+    }
+
+    // Auto-recovery: if every assigned sensor missed this cycle the bus is
+    // stuck.  After TEMP_REINIT_AFTER consecutive full-miss cycles call
+    // dallas.begin() to reinitialise the library and unstick the bus.
+    // Note: failed == assigned can be true even when individual sensors are
+    // in their debounce window (holding last-good values), because 'failed'
+    // counts raw bad reads, not how many are displaying OFFLINE.  This is
+    // intentional — if all sensors are returning bad data the bus needs reinit
+    // regardless of what the UI is showing.
+    // DEBUG: periodic heartbeat — log all assigned sensor values every 10 cycles
+    // even when healthy, so you can see the last known-good state before dropout.
+    static uint8_t s_heartbeatCount = 0;
+    if (++s_heartbeatCount >= 10) {
+        s_heartbeatCount = 0;
+        Serial.printf("[TEMP] heartbeat: assigned=%u failed=%u", assigned, failed);
+        for (int i = 0; i < MAX_SENSORS; i++) {
+            if (romIsAssigned(roms[i])) {
+                Serial.printf(" s%d=%.2f", i, temps[i]);
+            }
+        }
+        Serial.println();
+    }
+
+    if (assigned > 0 && failed == assigned) {
+        if (++s_tempFailStreak >= TEMP_REINIT_AFTER) {
+            Serial.printf("[TEMP] *** ALL %u sensor(s) offline x%u — calling dallas.begin() ***\n",
+                          assigned, s_tempFailStreak);
+            dallas.begin();
+            s_tempFailStreak = 0;
+            // Reset per-sensor debounce state after bus reinit so sensors
+            // come back online cleanly on the next valid read.
+            memset(s_sensorMissCount, 0, sizeof(s_sensorMissCount));
+        } else {
+            Serial.printf("[TEMP] all %u sensor(s) failed this cycle (streak %u/%u)\n",
+                          assigned, s_tempFailStreak, TEMP_REINIT_AFTER);
+        }
+    } else {
+        s_tempFailStreak = 0;
+    }
+
     xSemaphoreGive(s_onewireMutex);
 
     // Step 3: write results

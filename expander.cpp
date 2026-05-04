@@ -32,7 +32,7 @@ static SemaphoreHandle_t s_wireMutex = nullptr;
 // IMPORTANT: wireUnlock() must only be called when wireLock() returned true.
 static bool wireLock() {
     if (!s_wireMutex) return false;
-    return xSemaphoreTake(s_wireMutex, portMAX_DELAY) == pdTRUE;
+    return xSemaphoreTake(s_wireMutex, pdMS_TO_TICKS(500)) == pdTRUE;
 }
 static void wireUnlock() {
     if (s_wireMutex) xSemaphoreGive(s_wireMutex);
@@ -59,12 +59,12 @@ static bool s_exp2Ok = false;
 // ---------------------------------------------------------------------------
 void expanderInit() {
     s_wireMutex = xSemaphoreCreateMutex();
-    Wire.begin(EXT_I2C_SDA, EXT_I2C_SCL);
+    Wire1.begin(EXT_I2C_SDA, EXT_I2C_SCL);
 
     if (wireLock()) {
-        Wire.beginTransmission(EXT_I2C_ADDR);
-        Wire.write(s_pcfState);
-        Wire.endTransmission();
+        Wire1.beginTransmission(EXT_I2C_ADDR);
+        Wire1.write(s_pcfState);
+        Wire1.endTransmission();
         wireUnlock();
     }
 }
@@ -75,8 +75,8 @@ void expanderInit() {
 bool expanderReadBit(uint8_t bit) {
     if (bit > 7) return true;
     if (!wireLock()) return true;    // safe default on lock failure: level OK
-    Wire.requestFrom((uint8_t)EXT_I2C_ADDR, (uint8_t)1);
-    uint8_t v = Wire.available() ? Wire.read() : 0xFF;
+    Wire1.requestFrom((uint8_t)EXT_I2C_ADDR, (uint8_t)1);
+    uint8_t v = Wire1.available() ? Wire1.read() : 0xFF;
     wireUnlock();
     return ((v >> bit) & 0x01) != 0;
 }
@@ -87,9 +87,9 @@ void expanderWriteBit(uint8_t bit, bool value) {
     else       s_pcfState &= ~(1u << bit);
 
     if (!wireLock()) return;         // skip write if lock unavailable
-    Wire.beginTransmission(EXT_I2C_ADDR);
-    Wire.write(s_pcfState);
-    Wire.endTransmission();
+    Wire1.beginTransmission(EXT_I2C_ADDR);
+    Wire1.write(s_pcfState);
+    Wire1.endTransmission();
     wireUnlock();
 }
 
@@ -104,9 +104,9 @@ volatile uint32_t g_waterCondPulses  = 0;
 void expander2Init() {
     if (!wireLock()) return;
     // Write 0xFF to set all bits as inputs (PCF8574 quasi-bidirectional)
-    Wire.beginTransmission(EXT2_I2C_ADDR);
-    Wire.write(0xFF);
-    uint8_t err = Wire.endTransmission();
+    Wire1.beginTransmission(EXT2_I2C_ADDR);
+    Wire1.write(0xFF);
+    uint8_t err = Wire1.endTransmission();
     wireUnlock();
 
     if (err != 0) {
@@ -116,6 +116,20 @@ void expander2Init() {
     } else {
         Serial.printf("[EXP2] PCF8574 @ 0x%02X OK\n", EXT2_I2C_ADDR);
         s_exp2Ok = true;
+    }
+}
+
+void expanderI2CScan() {
+    Serial.println("[DIAG-PINS] I2C scan (GPIO17/18):");
+    for (uint8_t addr = 0x18; addr <= 0x27; addr++) {
+        if (!wireLock()) continue;
+        Wire1.beginTransmission(addr);
+        uint8_t err = Wire1.endTransmission();
+        wireUnlock();
+        if (err == 0)
+            Serial.printf("[DIAG-PINS]   0x%02X → ACK ✓\n", addr);
+        else
+            Serial.printf("[DIAG-PINS]   0x%02X → NACK (err %d)\n", addr, err);
     }
 }
 
@@ -136,9 +150,9 @@ void flow2PollTask(void* pvParams) {
         bool    avail = false;
 
         if (wireLock()) {
-            Wire.requestFrom((uint8_t)EXT2_I2C_ADDR, (uint8_t)1);
-            avail = Wire.available();
-            curr  = avail ? Wire.read() : prev;
+            Wire1.requestFrom((uint8_t)EXT2_I2C_ADDR, (uint8_t)1);
+            avail = Wire1.available();
+            curr  = avail ? Wire1.read() : prev;
             wireUnlock();
         }
 

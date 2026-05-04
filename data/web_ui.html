@@ -154,6 +154,11 @@
           </div>
         </div>
 
+        <div class="flex gap-3 mb-3">
+          <button onclick="showValveScreen()" id="btn-valves"
+                  class="flex-1 py-3 bg-[#2a2a2a] hover:bg-[#333] border border-orange-400/40
+                         rounded-2xl text-orange-300 font-medium text-sm">VALVES</button>
+        </div>
         <button onclick="sendCommand('STOP')" id="btn-stop"
                 class="w-full py-4 bg-red-600 hover:bg-red-500 rounded-2xl text-white font-medium">STOP</button>
       </div>
@@ -162,12 +167,30 @@
     <!-- ============================================================= SCREEN 3 — Valves -->
     <div id="screen-3" class="screen hidden">
       <div class="card p-4 sm:p-6">
-        <div class="flex justify-between items-center mb-5">
+        <div class="flex justify-between items-center mb-4">
           <h2 id="valves-title" class="text-lg sm:text-xl font-semibold">Valves Control</h2>
           <button onclick="backFromValveScreen()"
                   class="text-xs px-3 py-1.5 rounded-full border border-gray-500
                          text-gray-300 hover:bg-gray-700">BACK</button>
         </div>
+
+        <!-- Automation control panel -->
+        <div class="bg-[#181818] rounded-2xl px-4 py-3 mb-4 flex flex-wrap items-center gap-3">
+          <span class="text-sm text-gray-400">Automation:</span>
+          <span id="auto-status-pill"
+                class="px-3 py-1 text-xs rounded-full font-medium bg-gray-600 text-white">
+            STOPPED
+          </span>
+          <div class="flex gap-2 ml-auto">
+            <button onclick="sendCommand('VALVE:AUTO:RUN')"
+                    class="px-4 py-1.5 bg-green-700 hover:bg-green-600 rounded-xl
+                           text-xs font-medium text-white">START AUTO</button>
+            <button onclick="sendCommand('VALVE:AUTO:STOP')"
+                    class="px-4 py-1.5 bg-gray-600 hover:bg-gray-500 rounded-xl
+                           text-xs font-medium text-white">STOP AUTO</button>
+          </div>
+        </div>
+
         <div id="valve-rules-container" class="space-y-3"></div>
       </div>
     </div>
@@ -266,6 +289,12 @@
       })
         .then(() => setTimeout(fetchState, 250))   // immediate post-command refresh
         .catch(err => console.error('Command error:', err));
+    }
+
+    // Manual valve override — sends VALVE:N:OPEN or VALVE:N:CLOSE.
+    // The firmware immediately writes the I2C expander and clears automationRunning.
+    function manualValve(idx, action) {
+      sendCommand(`VALVE:${idx}:${action}`);
     }
 
     // -------------------------------------------------------------------------
@@ -475,11 +504,24 @@
         const badgeCls = isOpen
           ? 'px-2 py-0.5 text-xs bg-green-600 text-white rounded-full font-medium'
           : 'px-2 py-0.5 text-xs bg-gray-600 text-white rounded-full font-medium';
+        // Only the first 3 valves have physical hardware; placeholders still show UI
+        // but OPEN/CLOSE buttons are visually muted for index >= 3.
+        const isPhysical = i < 3;
+        const openBtnCls  = isOpen && isPhysical
+          ? 'px-3 py-1 rounded-lg text-xs font-medium bg-green-700 text-white'
+          : 'px-3 py-1 rounded-lg text-xs font-medium bg-[#333] text-gray-300 hover:bg-[#444]';
+        const closeBtnCls = !isOpen && isPhysical
+          ? 'px-3 py-1 rounded-lg text-xs font-medium bg-red-800 text-white'
+          : 'px-3 py-1 rounded-lg text-xs font-medium bg-[#333] text-gray-300 hover:bg-[#444]';
         return `
           <div class="bg-[#181818] rounded-2xl px-4 py-4 space-y-1">
-            <div class="flex items-center justify-between">
-              <span class="font-medium text-gray-100">${name}</span>
-              <span id="v${i}-badge" class="${badgeCls}">${isOpen ? 'OPEN' : 'CLOSED'}</span>
+            <div class="flex items-center justify-between gap-2">
+              <span class="font-medium text-gray-100 min-w-0 truncate">${name}</span>
+              <div class="flex items-center gap-2 shrink-0">
+                <button onclick="manualValve(${i},'OPEN')"  class="${openBtnCls}">OPEN</button>
+                <button onclick="manualValve(${i},'CLOSE')" class="${closeBtnCls}">CLOSE</button>
+                <span id="v${i}-badge" class="${badgeCls}">${isOpen ? 'OPEN' : 'CLOSED'}</span>
+              </div>
             </div>
             ${condRow(i, 'open',  rule.openWhen)}
             ${condRow(i, 'close', rule.closeWhen)}
@@ -499,13 +541,36 @@
 
     function updateValveBadges() {
       if (!currentState) return;
+
+      // Automation status pill
+      const pill = document.getElementById('auto-status-pill');
+      if (pill) {
+        const running = !!currentState.automationRunning;
+        pill.textContent = running ? 'RUNNING' : 'STOPPED';
+        pill.className   = running
+          ? 'px-3 py-1 text-xs rounded-full font-medium bg-green-700 text-white'
+          : 'px-3 py-1 text-xs rounded-full font-medium bg-gray-600 text-white';
+      }
+
+      // Per-valve badge + manual button highlight
       (currentState.valveOpen || []).forEach((isOpen, i) => {
-        const el = document.getElementById(`v${i}-badge`);
-        if (!el) return;
-        el.textContent = isOpen ? 'OPEN' : 'CLOSED';
-        el.className   = isOpen
-          ? 'px-2 py-0.5 text-xs bg-green-600 text-white rounded-full font-medium'
-          : 'px-2 py-0.5 text-xs bg-gray-600 text-white rounded-full font-medium';
+        const badge = document.getElementById(`v${i}-badge`);
+        if (badge) {
+          badge.textContent = isOpen ? 'OPEN' : 'CLOSED';
+          badge.className   = isOpen
+            ? 'px-2 py-0.5 text-xs bg-green-600 text-white rounded-full font-medium'
+            : 'px-2 py-0.5 text-xs bg-gray-600 text-white rounded-full font-medium';
+        }
+        // Re-highlight the OPEN/CLOSE buttons to reflect current hardware state
+        const openBtn  = document.querySelector(`button[onclick="manualValve(${i},'OPEN')"]`);
+        const closeBtn = document.querySelector(`button[onclick="manualValve(${i},'CLOSE')"]`);
+        const isPhysical = i < 3;
+        if (openBtn)  openBtn.className  = isOpen && isPhysical
+          ? 'px-3 py-1 rounded-lg text-xs font-medium bg-green-700 text-white'
+          : 'px-3 py-1 rounded-lg text-xs font-medium bg-[#333] text-gray-300 hover:bg-[#444]';
+        if (closeBtn) closeBtn.className = !isOpen && isPhysical
+          ? 'px-3 py-1 rounded-lg text-xs font-medium bg-red-800 text-white'
+          : 'px-3 py-1 rounded-lg text-xs font-medium bg-[#333] text-gray-300 hover:bg-[#444]';
       });
     }
 

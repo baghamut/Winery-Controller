@@ -348,6 +348,10 @@ static void buildStateJson(String& out, bool isMonitorClient)
     doc["valveOpLte"]  = STR_VALVE_OP_LTE;
     doc["valveOpEq"]   = STR_VALVE_OP_EQ;
 
+    // Live valve automation flag (NOT persisted – false on every boot).
+    // Drives the automation status pill and start/stop buttons in both UIs.
+    doc["automationRunning"] = snap.automationRunning;
+
     if (doc.overflowed()) {
         Serial.println("[HTTPS] WARNING: /state JSON doc overflowed");
     }
@@ -554,6 +558,28 @@ static const httpd_uri_t uri_update_cert = {
 
 static esp_err_t handle_ota(httpd_req_t *req)
 {
+    // ── Safety gate ──────────────────────────────────────────────────────────
+    // Refuse flash if the process is running or a safety trip is active.
+    // Mirrors the same guard in ota.cpp pull-OTA path.
+    {
+        AppState snap;
+        stateLock();
+        snap = g_state;
+        stateUnlock();
+
+        if (snap.isRunning) {
+            httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST,
+                                "OTA refused: process is running");
+            return ESP_FAIL;
+        }
+        if (snap.safetyTripped) {
+            httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST,
+                                "OTA refused: safety trip active");
+            return ESP_FAIL;
+        }
+    }
+    // ─────────────────────────────────────────────────────────────────────────
+
     size_t total = req->content_len;
     if (total == 0) {
         httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "No firmware content");
@@ -615,7 +641,12 @@ void httpServerInit()
     conf.servercert_len         = s_cert.size();
     conf.prvtkey_pem            = s_key.data();
     conf.prvtkey_len            = s_key.size();
-    conf.httpd.stack_size       = 8192;
+    // mbedTLS RSA handshake needs ~10–11 KB of stack.  8192 was too small,
+    // causing every handshake to stack-overflow internally and return -0x7780
+    // (MBEDTLS_ERR_SSL_HANDSHAKE_FAILURE).  The browser then retried at the
+    // poll interval, creating a sustained CPU storm on Core 0 that disrupted
+    // 1-Wire conversion timing.  12288 gives enough headroom.
+    conf.httpd.stack_size       = 12288;
     conf.httpd.max_uri_handlers = 16;
     conf.port_secure            = 443;
 
@@ -623,6 +654,10 @@ void httpServerInit()
     conf.httpd.max_open_sockets = 3;
     conf.httpd.lru_purge_enable = true;
     conf.httpd.max_req_hdr_len  = 2048;
+    // Limit the TCP accept backlog to 1.  If a handshake is already in flight
+    // (slow on ESP32), further connection attempts queue rather than spawning
+    // concurrent handshakes that compete for stack and CPU.
+    conf.httpd.backlog_conn     = 1;
 
     // Disable TLS session tickets — saves ~10 KB internal DRAM per session.
     conf.session_tickets = MBEDTLS_SSL_SESSION_TICKETS_DISABLED;

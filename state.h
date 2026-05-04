@@ -198,6 +198,14 @@ struct AppState {
     // -----------------------------------------------------------------------
     ValveRule valveRules[VALVE_COUNT];        // persisted; default = all VALVE_OP_NONE
     bool      valveOpen[VALVE_COUNT] = {};    // live; NOT persisted
+
+    // -----------------------------------------------------------------------
+    // Valve automation flag  (NOT persisted – must be explicitly started)
+    //   false on cold boot. Set true by VALVE:AUTO:RUN, false by VALVE:AUTO:STOP,
+    //   any manual VALVE:N:OPEN/CLOSE command, STOP, MODE:0, or safety trip.
+    //   valveEvaluateAll() short-circuits when false → valves hold last state.
+    // -----------------------------------------------------------------------
+    bool      automationRunning = false;
 };
 
 // ---------------------------------------------------------------------------

@@ -9,7 +9,7 @@
 // ---------------------------------------------------------------------------
 // Firmware version
 // ---------------------------------------------------------------------------
-#define FW_VERSION  "3.7.6"
+#define FW_VERSION  "3.7.7"
 
 // ---------------------------------------------------------------------------
 // OTA firmware URL
@@ -55,11 +55,11 @@
 // ---------------------------------------------------------------------------
 
 // SSR outputs – native LEDC 10 Hz PWM
-#define PIN_SSR1        5    // Distillation heater A – SSR1
-#define PIN_SSR2        6    // Distillation heater B – SSR2
-#define PIN_SSR3        7    // Distillation heater C – SSR3
-#define PIN_SSR4        15   // Rectification heater A – SSR4
-#define PIN_SSR5        16   // Rectification heater B – SSR5
+#define PIN_SSR1        5    // Rectification heater A – SSR1
+#define PIN_SSR2        6    // Rectification heater B – SSR2
+#define PIN_SSR3        7    // Rectification heater C – SSR3
+#define PIN_SSR4        15   // Distillation heater A – SSR4
+#define PIN_SSR5        16   // Distillation heater B – SSR5
 
 // Native sensors that must stay on ESP32
 #define PIN_PRESSURE    9    // Analog pressure sensor (0.5–4.5 V → ADC on GPIO9)
